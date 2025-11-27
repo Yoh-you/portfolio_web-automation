@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 仮想環境
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ログファイル
+program/logs/*.log
+*.log
+
+# 機密情報（重要！）
+program/config.enc
+
+# 一時ファイル
+*.tmp
+*.bak
+*.backup
+
+# ダウンロードファイル
+Downloads/
+program/downloads/
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Excel一時ファイル
+~$*.xlsx
+~$*.xls
+~$*.docx
+
+# CSVファイル
+*.csv
+
+# PDFファイル（ダウンロードされたもの）
+*.pdf
+
