@@ -9,7 +9,7 @@ import logging
 import yaml
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from retry import retry
 import keyboard
@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import queue
 import getpass
 import base64
+from openpyxl import load_workbook
 
 # プログラム実行パスワード設定（setup.pyで生成された情報）
 def check_password(password: str) -> bool:
@@ -104,6 +105,11 @@ class AutomationScript:
         self.config = self.load_config(config_path)
         self.setup_environment()
         self.image_paths = self.load_image_paths()  # 画像パスを読み込む
+        template_data = self.load_outlook_template()
+        self.outlook_subject = template_data['subject']
+        self.outlook_body_template = template_data['body_template']
+        self.outlook_recipients = template_data['recipients']
+        self.outlook_table_rows = template_data['table_rows']
         self.running = True  # 実行状態フラグ
         self.paused = False  # 一時停止フラグ
         self.pause_lock = threading.Lock()  # スレッドセーフな状態管理
@@ -470,6 +476,97 @@ class AutomationScript:
         except Exception as e:
             raise AutomationError(f"画像パス生成に失敗: {str(e)}")
 
+
+    def load_outlook_template(self) -> Dict[str, Any]:
+        """Excel??????????????????????????????"""
+        template_location = self.config.template_path or "outlookmail_????????.xlsx"
+        template_path = Path(template_location)
+        if not template_path.is_absolute():
+            template_path = Path(__file__).parent / template_path
+
+        if not template_path.exists():
+            raise AutomationError(f"Outlook??????????????: {template_path}")
+
+        try:
+            workbook = load_workbook(template_path, data_only=True)
+            sheet_name = "?????????"
+            sheet = workbook[sheet_name] if sheet_name in workbook.sheetnames else workbook.active
+
+            subject = str(sheet["H1"].value or "").strip()
+            body_template = str(sheet["H2"].value or "").strip()
+
+            recipients: Dict[str, Dict[str, str]] = {}
+            table_rows: List[Dict[str, str]] = []
+            for row in sheet.iter_rows(min_row=2, max_col=5, values_only=True):
+                if not any(cell not in (None, "") for cell in row):
+                    continue
+                _, office, manager, to_addr, cc_addr = row
+                office_name = str(office).strip() if office else ""
+                if not office_name:
+                    continue
+                recipient_info = {
+                    'branch': office_name,
+                    'manager': str(manager).strip() if manager else "",
+                    'to': str(to_addr).strip() if to_addr else "",
+                    'cc': str(cc_addr).strip() if cc_addr else "",
+                }
+                recipients[office_name] = recipient_info
+                table_rows.append({
+                    'no': str(row[0]).strip() if row[0] else "",
+                    'branch': office_name,
+                    'manager': recipient_info['manager'],
+                    'to': recipient_info['to'],
+                    'cc': recipient_info['cc'],
+                })
+
+            if not recipients:
+                raise AutomationError("Outlook?????????????????????")
+
+            return {
+                'subject': subject,
+                'body_template': body_template,
+                'recipients': recipients,
+                'table_rows': table_rows,
+            }
+        except Exception as e:
+            raise AutomationError(f"Outlook??????????????????: {str(e)}")
+
+    def find_outlook_recipient(self, branch_name: str) -> Dict[str, str]:
+        """支店名から宛先情報を取得（部分一致も試行）"""
+        normalized_branch = str(branch_name or "").strip()
+        if not normalized_branch:
+            raise AutomationError("支店名が指定されていません")
+
+        for key, value in self.outlook_recipients.items():
+            if key.lower() == normalized_branch.lower():
+                return value
+
+        for key, value in self.outlook_recipients.items():
+            if normalized_branch.lower() in key.lower():
+                return value
+
+        fallback = next(iter(self.outlook_recipients.values()))
+        self.logger.warning(f"支店名 '{branch_name}' がテンプレートに見つからないため、既定の宛先を使用します")
+        return fallback
+
+    def compose_email_body(
+        self,
+        branch_name: str,
+        ak_value: str,
+        manager: str,
+        applicant_address: str
+    ) -> str:
+        """要件に基づきOutlook本文を組み立てる"""
+        lines: List[str] = []
+        branch_line = f"{branch_name}　{ak_value}".strip()
+        lines.append(branch_line if branch_line else branch_name or "")
+        lines.append(applicant_address.strip() if applicant_address else "")
+        lines.append(manager or "")
+        lines.append("")  # 空行
+        if self.outlook_body_template:
+            lines.append(self.outlook_body_template)
+        return "\n".join(lines)
+
     @retry(tries=3, delay=2, backoff=2)
     def click_image(self, image_name: str, use_grayscale: bool = False) -> None:
         """画像認識によるクリック（リトライ機能付き）"""
@@ -570,166 +667,42 @@ class AutomationScript:
             self.logger.error(f"テキスト検索エラー: {str(e)}")
             raise
 
-    def send_email(self, branch_name: str, recipient: str, ak_value: str, applicant_address: str = "") -> None:
-        """メール送信とその後の処理"""
+
+    def send_email(self, branch_name: str, ak_value: str, applicant_address: str = "") -> None:
+        """Outlookを使ってメールを作成・送信する"""
         try:
-            # Adobe PDF画面閉じる
             pyautogui.hotkey('ctrl', 'Q')
             time.sleep(3)
 
-            # Excelウィンドウをアクティブ化
-            window = pyautogui.getWindowsWithTitle(
-                "outlookmail_送付フォーマット.xlsx")[0]
-            window.activate()
-            
-            # Excel内の特定要素が表示されるまで待機
-            self.logger.info("Excel内の要素表示を待機中...")
-            if not self.wait_for_image('wait_image_1', timeout=30):
-                raise AutomationError("Excelファイルの内容表示待機がタイムアウトしました")
-            
-            # メール作成までの処理
-            pyautogui.hotkey('ctrl', 'f')
-            self.logger.info("Excel検索ダイアログの表示を待機中...")
-            if not self.wait_for_image('wait_image_4', timeout=30):
-                raise AutomationError("Excel検索ダイアログの表示待機がタイムアウトしました")
-            time.sleep(1)
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(1)
-            pyautogui.hotkey('delete')
-            time.sleep(1)
-            pyperclip.copy(recipient)
-            time.sleep(1)
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(2)
-            pyautogui.press('enter')
-            time.sleep(2)
-            pyautogui.press('esc')
-            time.sleep(2)
-            
-            # カーソル移動とメニュー表示
-            for _ in range(4):
-                pyautogui.press('tab')
-            
-            pyautogui.hotkey('shift', 'f10')  # 右クリックメニュー
-            self.logger.info("右クリックメニューの表示を待機中...")
-            if not self.wait_for_image('wait_image_5', timeout=30):
-                raise AutomationError("右クリックメニューの表示待機がタイムアウトしました")
-            time.sleep(1)
-            pyautogui.press('o')
-            time.sleep(1)
-            pyautogui.press('o')
-            pyautogui.press('enter')
-            time.sleep(3)
-            
-            # メールフォーマット画面が表示されるまで待機
-            self.logger.info("メールフォーマット画面の表示を待機中...")
-            if not self.wait_for_image('wait_image_6', timeout=30):
-                raise AutomationError("メールフォーマット画面の表示待機がタイムアウトしました")
-            
-            # 支店名を貼り付け
-            pyperclip.copy(branch_name)
-            pyautogui.hotkey('ctrl', 'v')
-            self.logger.info("支店名をペーストしました")
+            recipient_info = self.find_outlook_recipient(branch_name)
+            to_address = recipient_info.get('to', '')
+            cc_address = recipient_info.get('cc', '')
+            manager = recipient_info.get('manager', '')
 
-            # スペースキーを1回入力
-            pyautogui.press('space')
+            if not to_address and not cc_address:
+                raise AutomationError(f"支店 '{branch_name}' のTo/Ccが設定されていません")
 
-            # 職種データをペースト
-            pyperclip.copy(ak_value)
-            pyautogui.hotkey('ctrl', 'v')
-            self.logger.info("職種データをペーストしました")
+            subject = self.outlook_subject or f"{branch_name} レジュメ情報のご送付"
+            body = self.compose_email_body(branch_name, ak_value, manager, applicant_address)
 
-            # 改行してからアドレスをペースト
-            pyautogui.press('enter')
-            time.sleep(2)
-            
-            # 応募者のアドレスをペースト（スクショの場合）
-            if applicant_address:
-                pyperclip.copy(applicant_address)
-                pyautogui.hotkey('ctrl', 'v')
-                self.logger.info(f"応募者アドレスをペーストしました: {applicant_address}")
-                time.sleep(2)
+            attachment_path = self.get_latest_attachment()
+            self.logger.info(f"添付ファイル: {attachment_path}")
 
-            # 最新の添付ファイル名を取得（拡張子付き）
-            attachment_filename = self.get_latest_attachment_filename()
-            
-            # 新しいファイル添付方法（エクスプローラー経由）
-            self.logger.info(f"ファイルを添付します: {attachment_filename}")
-            
-            # 1. Alt+H → A → F → B でこのPC参照を開く
-            pyautogui.hotkey('alt', 'h')
-            time.sleep(1)
-            pyautogui.press('a')
-            time.sleep(1)
-            pyautogui.press('f')
-            self.logger.info("添付メニューの表示を待機中...")
-            if not self.wait_for_image('wait_image_7', timeout=30):
-                raise AutomationError("添付メニューの表示待機がタイムアウトしました")
-            time.sleep(1)
-            pyautogui.press('b')
-            time.sleep(1)
-            self.logger.info("参照ダイアログの表示を待機中...")
-            if not self.wait_for_image('wait_image_8', timeout=30):
-                raise AutomationError("参照ダイアログの表示待機がタイムアウトしました")
-            
-            # 2. Alt+Dでフォルダパスの欄をアクティブ化
-            self.logger.info("フォルダパスの欄をアクティブ化")
-            pyautogui.hotkey('alt', 'd')
-            time.sleep(2)
-            
-            # 3. download_folderのパスを貼り付け（絶対パスを取得）
-            download_folder_path = str(Path(self.config.download_folder).expanduser().resolve())
-            self.logger.info(f"フォルダパスを入力: {download_folder_path}")
-            pyperclip.copy(download_folder_path)
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(2)
-            pyautogui.press('enter')
-            time.sleep(5)  # フォルダ内容の読み込み完了を待つ
-            
-            # 4. image11（ファイル名欄）の右側をクリック
-            self.logger.info("ファイル名欄にカーソルを表示")
-            if not self.wait_and_click_image('filename_field', timeout=30, click_position='right'):
-                raise AutomationError("ファイル名欄が見つかりません")
-            time.sleep(3)  # フィールドがアクティブになるまで待機
-            
-            # フィールドがアクティブになったことを確認するため、もう一度クリック
-            pyautogui.click()  # 同じ位置を再クリック
-            time.sleep(1)
-            
-            # 既存の内容をクリア
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.5)
-            
-            # 5. ファイル名を貼り付けてEnter
-            self.logger.info(f"ファイル名を入力: {attachment_filename}")
-            pyperclip.copy(attachment_filename)
-            time.sleep(0.5)  # クリップボードへのコピー完了待機
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(3)  # ペースト後の待機時間を増加
-            pyautogui.press('enter')
-            time.sleep(2)
-            
-            # メールフォーマット画面に戻るまで待機
-            self.logger.info("メールフォーマット画面の表示を待機中...")
-            if not self.wait_for_image('wait_image_6', timeout=30):
-                raise AutomationError("メールフォーマット画面の表示待機がタイムアウトしました")
-            
-            time.sleep(self.config.wait_time.get('email', 2))
-            
-            # メール送信
-            pyautogui.hotkey('ctrl', 'enter')
-            self.logger.info(f"メール送信完了: {recipient}")
-            
-            
-            # Excel内の特定要素が表示されるまで待機（メール送信後のExcel画面復帰確認）
-            self.logger.info("メール送信後のExcel画面を待機中...")
-            if not self.wait_for_image('wait_image_1', timeout=30):
-                self.logger.warning("Excelファイルの内容表示待機がタイムアウトしました（メール送信後）")
+            self.logger.info("Outlookアプリケーションを起動します")
+            import win32com.client
+            outlook = win32com.client.Dispatch("Outlook.Application")
+            mail_item = outlook.CreateItem(0)
+            if to_address:
+                mail_item.To = to_address
+            if cc_address:
+                mail_item.CC = cc_address
+            mail_item.Subject = subject
+            mail_item.Body = body
+            mail_item.Attachments.Add(str(attachment_path))
+            mail_item.Send()
 
-            # ブラウザ画面に戻る処理
-            pyautogui.hotkey('alt', 'tab')
-            time.sleep(5)  # ブラウザへの切り替え完了を待つ
-            
+            self.logger.info(f"メール送信完了 To: {to_address or '未指定'} Cc: {cc_address or '未指定'}")
+
         except Exception as e:
             raise AutomationError(f"メール送信エラー: {str(e)}")
 
@@ -966,80 +939,7 @@ class AutomationScript:
         except Exception as e:
             raise AutomationError(f"通知メール送信エラー: {str(e)}")
 
-    def send_completion_notifications(self) -> None:
-        """
-        全処理完了後に通知先リストから通知メールを送信（Outlook COM経由）
-        """
-        try:
-            import win32com.client
-            
-            self.logger.info("処理完了通知を送信します")
-            
-            # Excelファイルのパス
-            excel_path = Path(__file__).parent / "outlookmail_送付フォーマット.xlsx"
-            
-            # Excelファイルを読み込み（シート名：処理完了の通知先）
-            df = pd.read_excel(excel_path, sheet_name='処理完了の通知先', header=0)
-            
-            self.logger.info("通知先リストを読み込みました")
-            self.logger.info(f"列名: {df.columns.tolist()}")
-            
-            # 件名を取得（E1セル = ヘッダー行のE列 = 列名から取得）
-            subject = ""
-            if len(df.columns) > 4:
-                subject = str(df.columns[4]) if pd.notna(df.columns[4]) else ""
-            self.logger.info(f"件名: {subject}")
-            
-            # B列の最終行を求める（NaNでない最後の行）
-            # A列=氏名、B列=アドレス、E列=本文
-            df_filtered = df[df.iloc[:, 1].notna()]  # B列（インデックス1）がNaNでない行
-            
-            if df_filtered.empty:
-                self.logger.warning("通知先リストが空です")
-                return
-            
-            self.logger.info(f"通知先件数: {len(df_filtered)}")
-            
-            # Outlookアプリケーションを起動
-            self.logger.info("Outlookアプリケーションを起動しています...")
-            outlook = win32com.client.Dispatch("Outlook.Application")
-            
-            # 各通知先にメールを送信
-            for i, row in df_filtered.iterrows():
-                try:
-                    name = row.iloc[0]  # A列：氏名
-                    recipient = row.iloc[1]  # B列：アドレス
-                    body = row.iloc[4]  # E列：本文
-                    
-                    # 空の宛先はスキップ
-                    if not recipient or str(recipient).strip() == "" or pd.isna(recipient):
-                        self.logger.info(f"行 {i + 1}: 宛先が空のためスキップしました")
-                        continue
-                    
-                    self.logger.info(f"通知メール送信: {name} ({recipient})")
-                    
-                    # 新規メールアイテムを作成（0はolMailItem定数）
-                    mail_item = outlook.CreateItem(0)
-                    
-                    # メール情報を設定
-                    mail_item.To = str(recipient).strip()
-                    mail_item.Subject = subject  # 全メール共通の件名（E1セルから取得）
-                    mail_item.Body = str(body) if pd.notna(body) else ""
-                    
-                    # メールを送信
-                    mail_item.Send()
-                    
-                    self.logger.info(f"メール送信完了: {recipient}")
-                    
-                except Exception as e:
-                    self.logger.error(f"通知メール送信エラー（{i+1}行目）: {str(e)}")
-                    continue
-            
-            self.logger.info("全通知メールの送信が完了しました")
-            
-        except Exception as e:
-            self.logger.error(f"処理完了通知エラー: {str(e)}")
-            raise AutomationError(f"処理完了通知に失敗: {str(e)}")
+
 
     def run(self):
         """メイン処理"""
@@ -1191,7 +1091,7 @@ class AutomationScript:
                             
                             # 3. スクリーンショットを添付してメール送信
                             self.logger.info("スクリーンショットを添付してメールを送信します")
-                            self.send_email(row['AD'], row['AD'], row['AK'], row['I'])
+                            self.send_email(row['AD'], row['AK'], row['I'])
                             
                         else:
                             resume_opened = True
@@ -1207,7 +1107,7 @@ class AutomationScript:
                                 self.save_screenshot()
                                 
                             # メール送信処理（PDFの場合はアドレス不要）
-                            self.send_email(row['AD'], row['AD'], row['AK'])
+                            self.send_email(row['AD'], row['AK'])
                         
                     except Exception as e:
                         self.logger.error(f"行{i + 1}の処理でエラー: {str(e)}")
@@ -1279,14 +1179,6 @@ class AutomationScript:
             except Exception as e:
                 self.logger.warning(f"検索欄のクリア処理でエラー: {str(e)}")
                 # エラーが発生しても処理は続行
-            
-            # 全処理完了後に通知メールを送信
-            try:
-                self.logger.info("処理完了通知を送信します")
-                self.send_completion_notifications()
-            except Exception as e:
-                self.logger.error(f"処理完了通知の送信に失敗しました: {str(e)}")
-                # 通知メール送信失敗は致命的ではないため、処理は続行
             
         except Exception as e:
             self.logger.error(f"致命的なエラー: {str(e)}")
