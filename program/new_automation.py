@@ -668,7 +668,13 @@ class AutomationScript:
             raise
 
 
-    def send_email(self, branch_name: str, ak_value: str, applicant_address: str = "") -> None:
+    def send_email(
+        self,
+        branch_name: str,
+        ak_value: str,
+        applicant_name: str = "",
+        applicant_address: str = ""
+    ) -> None:
         """Outlookを使ってメールを作成・送信する"""
         try:
             pyautogui.hotkey('ctrl', 'Q')
@@ -685,8 +691,9 @@ class AutomationScript:
             subject = self.outlook_subject or f"{branch_name} レジュメ情報のご送付"
             body = self.compose_email_body(branch_name, ak_value, manager, applicant_address)
 
-            attachment_path = self.get_latest_attachment()
-            self.logger.info(f"添付ファイル: {attachment_path}")
+            attachments = self.collect_email_attachments(branch_name, applicant_name)
+            if not attachments:
+                raise AutomationError("添付ファイルが見つかりませんでした")
 
             self.logger.info("Outlookアプリケーションを起動します")
             import win32com.client
@@ -698,10 +705,15 @@ class AutomationScript:
                 mail_item.CC = cc_address
             mail_item.Subject = subject
             mail_item.Body = body
-            mail_item.Attachments.Add(str(attachment_path))
+            for attachment in attachments:
+                mail_item.Attachments.Add(str(attachment))
             mail_item.Send()
 
-            self.logger.info(f"メール送信完了 To: {to_address or '未指定'} Cc: {cc_address or '未指定'}")
+            attachment_names = ", ".join(attachment.name for attachment in attachments)
+            self.logger.info(
+                f"メール送信完了 To: {to_address or '未指定'} "
+                f"Cc: {cc_address or '未指定'} 添付: {attachment_names}"
+            )
 
         except Exception as e:
             raise AutomationError(f"メール送信エラー: {str(e)}")
@@ -827,59 +839,87 @@ class AutomationScript:
             self.logger.error(f"スクリーンショット保存エラー: {str(e)}")
             raise AutomationError(f"スクリーンショット保存に失敗: {str(e)}")
 
-    def get_latest_attachment(self) -> str:
+    def collect_email_attachments(self, branch_name: str, applicant_name: str) -> List[Path]:
         """
-        最新の添付ファイル（PDF or スクリーンショット）を取得
-        Returns:
-            str: 添付するファイルのパス
+        PDFフォルダからPDFとスクリーンショットを検索して添付対象を取得します
+        gpt log1.txt に記載されているようなファイル名検索 + Outlook添付の流れを参考にしています
         """
-        try:
-            # PDFフォルダのパス（スクショもPDFフォルダに保存される）
-            pdf_folder = Path(self.config.download_folder).expanduser().resolve()
+        download_folder = Path(self.config.download_folder).expanduser().resolve()
+        if not download_folder.exists():
+            self.logger.warning(f"ダウンロードフォルダが見つかりません: {download_folder}")
+            return []
 
-            latest_file = None
-            latest_time = 0
+        keywords = self.build_attachment_keywords(branch_name, applicant_name)
+        if keywords:
+            self.logger.info(f"添付ファイル検索キーワード: {keywords}")
+        else:
+            self.logger.info("添付ファイル検索キーワードが未設定のため、拡張子ごとの最新ファイルを使用します")
 
-            # PDFファイルとPNGファイルをチェック
-            if pdf_folder.exists():
-                # PDFファイルをチェック
-                pdf_files = list(pdf_folder.glob('*.pdf'))
-                if pdf_files:
-                    pdf_latest = max(pdf_files, key=lambda f: f.stat().st_mtime)
-                    latest_time = pdf_latest.stat().st_mtime
-                    latest_file = pdf_latest
-
-                # PNGファイル（スクリーンショット）をチェック
-                png_files = list(pdf_folder.glob('*.png'))
-                if png_files:
-                    png_latest = max(png_files, key=lambda f: f.stat().st_mtime)
-                    if png_latest.stat().st_mtime > latest_time:
-                        latest_file = png_latest
-
-            if latest_file:
-                self.logger.info(f"添付ファイル: {latest_file}")
-                return str(latest_file)
+        attachments: List[Path] = []
+        for extension in ['.pdf', '.png']:
+            attachment = self.find_matching_attachment(download_folder, extension, keywords)
+            if attachment:
+                self.logger.info(f"{extension}添付候補: {attachment}")
+                attachments.append(attachment)
             else:
-                raise AutomationError("添付可能なファイルが見つかりません")
+                self.logger.warning(f"{extension}ファイルが見つかりませんでした")
 
-        except Exception as e:
-            self.logger.error(f"添付ファイル取得エラー: {str(e)}")
-            raise AutomationError(f"添付ファイル取得に失敗: {str(e)}")
+        return attachments
 
-    def get_latest_attachment_filename(self) -> str:
-        """
-        最新の添付ファイルのファイル名のみを取得（拡張子付き）
-        Returns:
-            str: ファイル名（例: "resume.pdf" or "山田太郎_東京オフィス.png"）
-        """
+    def find_matching_attachment(
+        self,
+        directory: Path,
+        extension: str,
+        keywords: List[str]
+    ) -> Optional[Path]:
+        """指定の拡張子でキーワードに合致するファイルを検索し最新のものを返す"""
         try:
-            attachment_path = self.get_latest_attachment()
-            filename = Path(attachment_path).name
-            self.logger.info(f"添付ファイル名: {filename}")
-            return filename
+            candidates = [path for path in directory.glob(f"*{extension}") if path.is_file()]
+            if not candidates:
+                return None
+
+            if keywords:
+                filtered = [
+                    path for path in candidates
+                    if all(self._keyword_in_filename(path.name, keyword) for keyword in keywords)
+                ]
+                if filtered:
+                    return max(filtered, key=lambda f: f.stat().st_mtime)
+                self.logger.debug(f"{extension}ファイルはキーワード{keywords}に一致せず、拡張子で最新ファイルを使用します")
+
+            return max(candidates, key=lambda f: f.stat().st_mtime)
         except Exception as e:
-            self.logger.error(f"ファイル名取得エラー: {str(e)}")
-            raise AutomationError(f"ファイル名取得に失敗: {str(e)}")
+            self.logger.error(f"{extension}ファイル検索エラー: {str(e)}")
+            return None
+
+    def build_attachment_keywords(self, branch_name: str, applicant_name: str) -> List[str]:
+        """支店名と応募者名をもとにファイル名検索用キーワードリストを作成"""
+        keywords = []
+        for value in (applicant_name, branch_name):
+            normalized = str(value or "").strip()
+            if normalized and normalized not in keywords:
+                keywords.append(normalized)
+        return keywords
+
+    @staticmethod
+    def _keyword_variants(keyword: str) -> List[str]:
+        """キーワードのバリアント（空白削除など）を生成"""
+        trimmed = keyword.strip()
+        if not trimmed:
+            return []
+        variants = {trimmed.lower()}
+        collapsed = "".join(trimmed.split()).lower()
+        if collapsed:
+            variants.add(collapsed)
+        variants.add(trimmed.replace(" ", "_").lower())
+        return list(variants)
+
+    def _keyword_in_filename(self, filename: str, keyword: str) -> bool:
+        """ファイル名にキーワードのいずれかのバリアントが含まれるか判定"""
+        if not keyword:
+            return True
+        filename_lower = filename.lower()
+        return any(variant in filename_lower for variant in self._keyword_variants(keyword))
 
     def confirm_csv_data(self, df_bx):
         """B/E/I/AD/AK列の内容をダイアログで表示し、10秒後に自動でOK"""
@@ -1091,7 +1131,7 @@ class AutomationScript:
                             
                             # 3. スクリーンショットを添付してメール送信
                             self.logger.info("スクリーンショットを添付してメールを送信します")
-                            self.send_email(row['AD'], row['AK'], row['I'])
+                            self.send_email(row['AD'], row['AK'], applicant_name=row['B'], applicant_address=row['I'])
                             
                         else:
                             resume_opened = True
@@ -1107,7 +1147,7 @@ class AutomationScript:
                                 self.save_screenshot()
                                 
                             # メール送信処理（PDFの場合はアドレス不要）
-                            self.send_email(row['AD'], row['AK'])
+                            self.send_email(row['AD'], row['AK'], applicant_name=row['B'])
                         
                     except Exception as e:
                         self.logger.error(f"行{i + 1}の処理でエラー: {str(e)}")
