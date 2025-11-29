@@ -287,7 +287,6 @@ program\logs\automation_YYYYMMDD_HHMMSS.log
 ```
 pyautogui>=0.9.54
 Pillow>=10.0.0
-pyperclip>=1.8.2
 pandas>=2.0.0
 PyYAML>=6.0
 retry>=0.9.2
@@ -296,6 +295,8 @@ cryptography>=41.0.0
 opencv-python>=4.8.0
 openpyxl>=3.1.0
 pywin32==308
+selenium>=4.15.0
+webdriver-manager>=4.0.2
 ```
 
 ### アンインストール方法
@@ -312,7 +313,6 @@ pywin32==308
 ## ⚖️ 免責事項
 
 - 本プログラムの使用は自己責任でお願いします
-- プログラム実行中のシステムエラーやデータ損失について、製作者は責任を負いません
 - 重要なデータは事前にバックアップを取ることを推奨します
 
 ---

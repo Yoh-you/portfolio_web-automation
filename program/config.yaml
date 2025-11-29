@@ -1,52 +1,12 @@
-# ブラウザパス設定
-edge_path: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe %s'
+edge_path: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
 
-# フォルダパス設定
-download_folder: '~/Downloads/pdf'  # ~は現在のユーザーホームディレクトリを表す（どのPCでも動作）
+download_folder: '~/Downloads/pdf'
 template_path: 'outlookmail_送付フォーマット.xlsx'
 
-# 機密情報ファイル
 secrets_file: 'secrets.yaml'
 
-# 待機時間設定（秒）
 wait_time:
-  browser: 6
-  click: 3
-  email: 2
-  save_pdf: 3  # PDFの保存待機時間を追加
-
-# 画像パス設定
-base_image_path: 'images'
-
-# 実際に使用する画像枚数を設定
-image_paths:
-  base_format: '{base_path}/image{number}.png'
-  start_number: 1
-  end_number: 13  # ここで実際使う最後の画像No.を設定
-
-# AirワークURLやログイン情報はsecrets.yamlで管理
-
-  # 特定の画像の別名定義
-  login: '{base_path}/image1.png'
-  login_half: '{base_path}/image2.png'  # ログイン情報入力用の画像
-  resume_open: '{base_path}/image9.png'
-  download: '{base_path}/image7.png'
-  resume_close: '{base_path}/image12.png'
-  search_box: '{base_path}/image6.png'
-  not_supported: '{base_path}/image8.png'
-  iab: '{base_path}/image13.png' # iab=Interview Arrangement Begins
-  fail: '{base_path}/image12.png'
-  a_date: '{base_path}/image8.png' # (a=Applicant)
-  save: '{base_path}/image10.png'
-  filename_field: '{base_path}/image11.png'  # ファイル名欄用
-  wait_image_1: '{base_path}/wait_image_1.png'  # Excel待機用画像
-  wait_image_2: '{base_path}/wait_image_2.png'  # 履歴書オープン直後待機用
-  wait_image_3: '{base_path}/wait_image_3.png'  # PDF保存メニュー待機用
-  wait_image_4: '{base_path}/wait_image_4.png'  # Excel検索欄待機用
-  wait_image_5: '{base_path}/wait_image_5.png'  # 右クリックメニュー待機用
-  wait_image_6: '{base_path}/wait_image_6.png'  # メールフォーマット待機用画像
-  wait_image_7: '{base_path}/wait_image_7.png'  # 添付メニュー遷移待機用
-  wait_image_8: '{base_path}/wait_image_8.png'  # このPC参照表示待機用
-
-# 画像認識設定
-confidence_level: 0.8
+  browser: 5
+  click: 5
+  email: 5
+  save_pdf: 5
