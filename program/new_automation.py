@@ -10,9 +10,8 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 import pyautogui
+import requests
 import tkinter as tk
-from pywinauto import Desktop, timings
-from pywinauto.findwindows import ElementNotFoundError
 import yaml
 import keyboard
 from cryptography.fernet import Fernet
@@ -151,6 +150,17 @@ class AutomationScript:
         else:
             driver = webdriver.Edge(options=options)
         driver.set_page_load_timeout(60)
+        try:
+            driver.execute_cdp_cmd(
+                "Page.setDownloadBehavior",
+                {
+                    "behavior": "allow",
+                    "downloadPath": str(download_folder),
+                    "eventsEnabled": True,
+                },
+            )
+        except Exception as exc:
+            self.logger.warning(f"ダウンロード設定の適用に失敗しました: {exc}")
         return driver
 
     def login(self) -> None:
@@ -239,7 +249,7 @@ class AutomationScript:
         root.destroy()
         return result
 
-    def search_and_open(self, full_name: str) -> None:
+    def search_and_open(self, full_name: str) -> str:
         if not self.browser_wait or not self.driver:
             raise AutomationError("WebDriverが初期化されていません")
         self.logger.info(f"応募者を検索します: {full_name}")
@@ -265,168 +275,84 @@ class AutomationScript:
             first_cell.click()
             self.logger.info("セルをクリックして詳細を開きました")
         time.sleep(1)
-        resume_button = self.browser_wait.until(EC.element_to_be_clickable((By.XPATH, "//a[@data-la='entry_detail_resume_btn_click']")))
-        current = list(self.driver.window_handles)
-        resume_button.click()
-        self.wait_for_new_tab(len(current))
+        resume_button = self.browser_wait.until(
+            EC.presence_of_element_located((By.XPATH, "//a[@data-la='entry_detail_resume_btn_click']"))
+        )
+        pdf_url = resume_button.get_attribute("href")
+        if not pdf_url:
+            raise AutomationError("レジュメのPDF URLを取得できませんでした")
+        self.logger.info(f"レジュメPDFのURL: {pdf_url[:80]}...")
+        return pdf_url
 
-    def wait_for_new_tab(self, previous_count: int, timeout: int = 15) -> None:
+    def download_pdf_from_url(self, pdf_url: str, file_name: str) -> Path:
         if not self.driver:
             raise AutomationError("WebDriverが未初期化です")
-        start = time.time()
-        while time.time() - start < timeout:
-            handles = self.driver.window_handles
-            if len(handles) > previous_count:
-                self.driver.switch_to.window(handles[-1])
-                return
-            time.sleep(0.5)
-        raise AutomationError("新しいタブが開きません")
-
-    def save_pdf(self) -> bool:
-        self.logger.info("PDF保存処理を行います")
-        for attempt in range(3):
-            try:
-                time.sleep(4)
-                # マウスを画面中央に移動（右クリックメニューを表示するため）
-                screen_width, screen_height = pyautogui.size()
-                pyautogui.moveTo(screen_width // 2, screen_height // 2)
-                time.sleep(0.5)
-                pyautogui.click(button='right')
-                time.sleep(3)
-                pyautogui.press('s')  # 保存メニューを選択
-                time.sleep(5)
-                download_folder = Path(self.config.download_folder).expanduser().resolve()
-                if not self._handle_save_as_dialog(download_folder):
-                    raise AutomationError("名前を付けて保存ダイアログの操作に失敗しました")
-                time.sleep(self.config.wait_time.get('save_pdf', 4))
-                pyautogui.hotkey('ctrl', 'Q')
-                time.sleep(4)
-                return True
-            except Exception as exc:
-                self.logger.warning(f"PDF保存失敗 attempt={attempt+1}: {exc}")
-                time.sleep(1)
-        return False
-
-    def _handle_save_as_dialog(self, target_folder: Path) -> bool:
-        timeout = self.config.wait_time.get('save_pdf', 5) + 20
-        dialog_patterns = [
-            r"^名前を付けて保存.*Microsoft Edge",
-            r"^名前を付けて保存.*",
-            r".*Save As.*",
-        ]
-        self.logger.info(f"保存ダイアログ検出を開始 patterns={dialog_patterns} timeout={timeout}")
-        save_dialog = self._wait_for_save_dialog(dialog_patterns, timeout)
-        if save_dialog is None:
-            self.logger.warning("保存ダイアログ接続失敗: ダイアログが見つかりませんでした")
-            return False
-
-        use_full_path = False
-        address_control = self._find_control(
-            save_dialog,
-            [
-                {"title": "アドレス", "control_type": "Edit"},
-                {"title": "Address", "control_type": "Edit"},
-                {"title_re": ".*アドレス.*", "control_type": "Edit"},
-                {"class_name": "ComboBox", "title_re": ".*アドレス.*"},
-                {"class_name": "Edit", "found_index": 1},
-            ],
-        )
-        target_folder_path = target_folder.resolve()
-        if address_control:
-            target_path_str = str(target_folder_path)
-            self.logger.info(f"アドレスバーに保存先を設定: {target_path_str}")
-            try:
-                address_control.set_edit_text(target_path_str)
-            except Exception as exc:
-                self.logger.debug(f"アドレスバー set_edit_text で例外: {exc}、type_keys にフォールバックします")
-                address_control.type_keys("^a{DEL}")
-                address_control.type_keys(target_path_str, with_spaces=True, set_focus=True)
-            address_control.type_keys("{ENTER}")
-            time.sleep(1)
-        else:
-            self.logger.warning("アドレスバーが見つからないため、ファイル名欄にフルパスを入力します")
-            use_full_path = True
-
-        file_name_edit = self._find_control(
-            save_dialog,
-            [
-                {"title": "ファイル名:", "control_type": "Edit"},
-                {"title": "File name:", "control_type": "Edit"},
-                {"control_type": "Edit", "found_index": 0},
-            ],
-        )
-        if file_name_edit is None:
-            self.logger.warning("ファイル名欄が見つかりませんでした")
-            return False
-
+        download_folder = Path(self.config.download_folder).expanduser().resolve()
+        download_folder.mkdir(parents=True, exist_ok=True)
+        safe_stem = "".join(c for c in file_name if c.isalnum() or c in ("_", "-", " ")).strip() or "resume"
+        target_name = f"{safe_stem}.pdf"
+        self.logger.info(f"PDFダウンロードを開始します url={pdf_url[:80]}...")
+        origin_handle = None
+        new_window_created = False
         try:
-            default_name = file_name_edit.texts()[0]
-            self.logger.debug(f"保存ダイアログ既定ファイル名: {default_name}")
-        except (IndexError, AttributeError):
-            default_name = "download.pdf"
-            self.logger.debug("保存ダイアログ既定ファイル名取得に失敗、download.pdf を使用")
-        final_name = Path(default_name).name or "download.pdf"
-        if use_full_path:
-            input_value = str(target_folder_path / final_name)
-        else:
-            input_value = final_name
-        self.logger.info(f"ファイル名欄に入力: {input_value}")
-        file_name_edit.set_edit_text(input_value)
-
-        save_button = self._find_control(
-            save_dialog,
-            [
-                {"title": "保存", "control_type": "Button"},
-                {"title": "Save", "control_type": "Button"},
-                {"control_type": "Button", "found_index": 0},
-            ],
-        )
-        if save_button is None:
-            self.logger.warning("保存ボタンが見つかりませんでした")
-            return False
-
-        try:
-            save_button.click()
-            return True
+            origin_handle = self.driver.current_window_handle
         except Exception as exc:
-            self.logger.warning(f"保存ボタンのクリックに失敗しました: {exc}")
-            return False
+            self.logger.debug(f"現在のウィンドウ取得に失敗しました: {exc}")
+        try:
+            self.driver.switch_to.new_window("tab")
+            new_window_created = True
+            self.logger.debug("PDFダウンロード用の新規タブを開きました")
+        except Exception as exc:
+            self.logger.warning(f"新規タブの作成に失敗したため既存タブを使用します: {exc}")
+        # ビューア表示（あくまでユーザー確認用）。ダウンロード自体は requests で実行。
+        try:
+            self.driver.get(pdf_url)
+        except Exception as exc:
+            self.logger.warning(f"PDFビューア表示に失敗しましたがダウンロードは継続します: {exc}")
 
-    def _wait_for_save_dialog(self, title_patterns, timeout: int):
-        deadline = time.time() + timeout
-        attempt = 1
-        while time.time() < deadline:
-            desktop = Desktop(backend="uia")
-            for pattern in title_patterns:
-                try:
-                    self.logger.debug(f"[保存ダイアログ探索] attempt={attempt} pattern={pattern}")
-                    dialog = desktop.window(title_re=pattern)
-                    dialog.wait("visible", timeout=0.5)
-                    self.logger.info(f"保存ダイアログ検出成功 pattern={pattern}")
-                    return dialog.wrapper_object()
-                except ElementNotFoundError:
-                    continue
-                except timings.TimeoutError:
-                    continue
-                except Exception as exc:
-                    self.logger.debug(f"保存ダイアログ取得中に例外: {exc}")
-                    continue
-            attempt += 1
-            time.sleep(0.5)
-        self.logger.warning("保存ダイアログ検出に失敗しました（タイムアウト）")
-        return None
+        headers = {}
+        try:
+            ua = self.driver.execute_script("return navigator.userAgent;")
+            headers["User-Agent"] = ua
+        except Exception:
+            pass
+        try:
+            cookies = {c["name"]: c["value"] for c in self.driver.get_cookies()}
+        except Exception as exc:
+            self.logger.warning(f"クッキー取得に失敗しました: {exc}")
+            cookies = {}
 
-    def _find_control(self, dialog, candidates):
-        for props in candidates:
+        target_path = download_folder / target_name
+        try:
+            with requests.get(pdf_url, headers=headers, cookies=cookies, stream=True, timeout=60) as resp:
+                resp.raise_for_status()
+                with open(target_path, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+            self.logger.info(f"PDFを保存しました: {target_path}")
+        except Exception as exc:
+            raise AutomationError(f"PDFダウンロードに失敗しました: {exc}")
+
+        if new_window_created:
             try:
-                control = dialog.child_window(**props).wrapper_object()
-                self.logger.debug(f"コントロール検出成功 props={props}")
-                return control
-            except ElementNotFoundError:
-                continue
+                self.driver.close()
+                self.logger.debug("PDFタブを閉じました")
             except Exception as exc:
-                self.logger.debug(f"コントロール検索で例外発生 {props}: {exc}")
-        return None
+                self.logger.warning(f"PDFタブのクローズに失敗しました: {exc}")
+            if origin_handle:
+                try:
+                    self.driver.switch_to.window(origin_handle)
+                    self.logger.debug("元のタブへ戻りました")
+                except Exception as exc:
+                    self.logger.warning(f"元のタブへ戻れませんでした: {exc}")
+        else:
+            try:
+                self.driver.back()
+                time.sleep(1)
+            except Exception as exc:
+                self.logger.warning(f"前の画面への戻りに失敗しました: {exc}")
+        return final_path
 
     def collect_attachment(self) -> Path:
         self.logger.info("添付ファイル候補を探します")
@@ -504,15 +430,18 @@ class AutomationScript:
                     if int(row["E"]) >= 55:
                         self.logger.info("55歳以上のためスキップ")
                         continue
-                    self.search_and_open(row["B"])
+                    pdf_url = self.search_and_open(row["B"])
                     time.sleep(self.config.wait_time.get('browser', 3))
-                    if not self.save_pdf():
+                    success = True
+                    try:
+                        self.download_pdf_from_url(pdf_url, f"{row['B']}_{row['E']}")
+                    except Exception as exc:
+                        success = False
+                        self.logger.warning(f"PDFダウンロードに失敗しました: {exc}")
                         self.save_screenshot(row["B"])
-                    self.send_email(row["AD"], row["AK"], row["I"])
+                    if success:
+                        self.send_email(row["AD"], row["AK"], row["I"])
                 finally:
-                    pyautogui.hotkey('ctrl', 'w')
-                    if self.driver:
-                        self.driver.switch_to.window(self.driver.window_handles[0])
                     self.close_overlay()
         except Exception as exc:
             self.logger.error("処理中に致命的なエラーが発生しました")
