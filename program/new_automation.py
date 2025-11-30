@@ -11,6 +11,8 @@ from typing import Dict, List, Optional
 import pandas as pd
 import pyautogui
 import tkinter as tk
+from pywinauto import Application, timings
+from pywinauto.findwindows import ElementNotFoundError
 import yaml
 import keyboard
 from cryptography.fernet import Fernet
@@ -60,6 +62,13 @@ class AutomationScript:
     def __init__(self, config_path: str):
         self.setup_logging()
         self.config = self.load_config(config_path)
+        # pyautoguiの設定を追加
+        pyautogui.PAUSE = 0.5  # 各操作間に0.5秒の待機を設定
+        pyautogui.FAILSAFE = True  # フェイルセーフを有効化
+        # マウスを画面中央に移動（フォーカス問題の回避）
+        screen_width, screen_height = pyautogui.size()
+        pyautogui.moveTo(screen_width // 2, screen_height // 2)
+        
         self.driver: Optional[webdriver.Edge] = None
         self.browser_wait: Optional[WebDriverWait] = None
         self.running = True
@@ -185,7 +194,12 @@ class AutomationScript:
         if not self.browser_wait:
             raise AutomationError("WebDriverが未初期化です")
         self.logger.info("CSVダウンロードを開始します")
-        self.browser_wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@id='footerWrapper']/section/div[1]/button"))).click()
+        # JavaScriptで直接クリックして、確実に1回だけ実行
+        download_button = self.browser_wait.until(
+            EC.presence_of_element_located((By.XPATH, "//button[@data-la='entries_download_btn_click']"))
+        )
+        # Seleniumのclick()ではなく、JavaScriptで実行して確実に1回だけ
+        self.driver.execute_script("arguments[0].click();", download_button)
         time.sleep(self.config.wait_time.get('browser', 6))
 
     def get_latest_csv(self) -> str:
@@ -206,21 +220,22 @@ class AutomationScript:
         return df
 
     def confirm_csv_data(self, df: pd.DataFrame) -> bool:
-        self.logger.info("CSV内容確認ダイアログを表示します")
-        preview = df.head(5).to_string(index=False)
+        """B/E/I/AD/AK列の内容をダイアログで表示"""
+        preview = df[['B', 'E', 'I', 'AD', 'AK']].head(5).to_string(index=False)
         root = tk.Tk()
-        root.withdraw()
-
-        def auto_confirm():
-            time.sleep(10)
-            try:
-                pyautogui.press('enter')
-                self.logger.info("10秒経過：自動でOKを押しました")
-            except Exception as exc:
-                self.logger.warning(f"自動確認でEnter押下に失敗: {exc}")
-
-        threading.Thread(target=auto_confirm, daemon=True).start()
-        result = messagebox.askokcancel("CSV確認", f"{preview}\n10秒後に自動続行")
+        root.withdraw()  # メインウィンドウは非表示
+        
+        # ダイアログを確実に前面に表示する設定
+        root.attributes('-topmost', True)  # 常に最前面に表示
+        root.lift()  # ウィンドウを前面に移動
+        root.focus_force()  # フォーカスを強制的に取得
+        
+        # ダイアログを表示
+        result = messagebox.askokcancel(
+            "CSVデータ確認",
+            f"下記のデータで処理を開始します。\n\n{preview}\n\nOK→続行 / キャンセル→中断"
+        )
+        
         root.destroy()
         return result
 
@@ -272,21 +287,92 @@ class AutomationScript:
         for attempt in range(3):
             try:
                 time.sleep(4)
+                # マウスを画面中央に移動（右クリックメニューを表示するため）
+                screen_width, screen_height = pyautogui.size()
+                pyautogui.moveTo(screen_width // 2, screen_height // 2)
+                time.sleep(0.5)
                 pyautogui.click(button='right')
-                time.sleep(2)
-                pyautogui.press('s')
-                time.sleep(2)
-                pyautogui.press('enter')
-                time.sleep(2)
-                pyautogui.press('enter')
-                time.sleep(self.config.wait_time.get('save_pdf', 3))
-                pyautogui.hotkey('ctrl', 'Q')
                 time.sleep(3)
+                pyautogui.press('s')  # 保存メニューを選択
+                time.sleep(2)
+                pyautogui.press('enter')  # 保存ダイアログが表示されるのを待つ
+                time.sleep(5)
+                download_folder = Path(self.config.download_folder).expanduser().resolve()
+                if not self._handle_save_as_dialog(download_folder):
+                    raise AutomationError("名前を付けて保存ダイアログの操作に失敗しました")
+                time.sleep(self.config.wait_time.get('save_pdf', 4))
+                pyautogui.hotkey('ctrl', 'Q')
+                time.sleep(4)
                 return True
             except Exception as exc:
                 self.logger.warning(f"PDF保存失敗 attempt={attempt+1}: {exc}")
                 time.sleep(1)
         return False
+
+    def _handle_save_as_dialog(self, target_folder: Path) -> bool:
+        dialog_title_re = r"^名前を付けて保存"
+        timeout = self.config.wait_time.get('save_pdf', 5) + 10
+        try:
+            save_dialog = timings.wait_until_passes(
+                timeout,
+                0.5,
+                lambda: Application(backend="uia")
+                .connect(title_re=dialog_title_re, timeout=1)
+                .window(title_re=dialog_title_re)
+                .wrapper_object()
+            )
+        except Exception as exc:
+            self.logger.warning(f"保存ダイアログ接続失敗: {exc}")
+            return False
+
+        file_name_edit = self._find_control(
+            save_dialog,
+            [
+                {"title": "ファイル名:", "control_type": "Edit"},
+                {"title": "File name:", "control_type": "Edit"},
+                {"control_type": "Edit", "found_index": 0},
+            ],
+        )
+        if file_name_edit is None:
+            self.logger.warning("ファイル名欄が見つかりませんでした")
+            return False
+
+        try:
+            default_name = file_name_edit.texts()[0]
+        except (IndexError, AttributeError):
+            default_name = "download.pdf"
+        target_path = target_folder / default_name
+        self.logger.info(f"保存先パスを設定: {target_path}")
+        file_name_edit.set_edit_text(str(target_path))
+
+        save_button = self._find_control(
+            save_dialog,
+            [
+                {"title": "保存", "control_type": "Button"},
+                {"title": "Save", "control_type": "Button"},
+                {"control_type": "Button", "found_index": 0},
+            ],
+        )
+        if save_button is None:
+            self.logger.warning("保存ボタンが見つかりませんでした")
+            return False
+
+        try:
+            save_button.click()
+            return True
+        except Exception as exc:
+            self.logger.warning(f"保存ボタンのクリックに失敗しました: {exc}")
+            return False
+
+    def _find_control(self, dialog, candidates):
+        for props in candidates:
+            try:
+                return dialog.child_window(**props).wrapper_object()
+            except ElementNotFoundError:
+                continue
+            except Exception as exc:
+                self.logger.debug(f"コントロール検索で例外発生 {props}: {exc}")
+        return None
 
     def collect_attachment(self) -> Path:
         self.logger.info("添付ファイル候補を探します")
