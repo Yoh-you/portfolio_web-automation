@@ -294,8 +294,6 @@ class AutomationScript:
                 pyautogui.click(button='right')
                 time.sleep(3)
                 pyautogui.press('s')  # 保存メニューを選択
-                time.sleep(2)
-                pyautogui.press('enter')  # 保存ダイアログが表示されるのを待つ
                 time.sleep(5)
                 download_folder = Path(self.config.download_folder).expanduser().resolve()
                 if not self._handle_save_as_dialog(download_folder):
@@ -310,7 +308,7 @@ class AutomationScript:
         return False
 
     def _handle_save_as_dialog(self, target_folder: Path) -> bool:
-        timeout = self.config.wait_time.get('save_pdf', 5) + 10
+        timeout = self.config.wait_time.get('save_pdf', 5) + 20
         dialog_patterns = [
             r"^名前を付けて保存.*Microsoft Edge",
             r"^名前を付けて保存.*",
@@ -321,6 +319,33 @@ class AutomationScript:
         if save_dialog is None:
             self.logger.warning("保存ダイアログ接続失敗: ダイアログが見つかりませんでした")
             return False
+
+        use_full_path = False
+        address_control = self._find_control(
+            save_dialog,
+            [
+                {"title": "アドレス", "control_type": "Edit"},
+                {"title": "Address", "control_type": "Edit"},
+                {"title_re": ".*アドレス.*", "control_type": "Edit"},
+                {"class_name": "ComboBox", "title_re": ".*アドレス.*"},
+                {"class_name": "Edit", "found_index": 1},
+            ],
+        )
+        target_folder_path = target_folder.resolve()
+        if address_control:
+            target_path_str = str(target_folder_path)
+            self.logger.info(f"アドレスバーに保存先を設定: {target_path_str}")
+            try:
+                address_control.set_edit_text(target_path_str)
+            except Exception as exc:
+                self.logger.debug(f"アドレスバー set_edit_text で例外: {exc}、type_keys にフォールバックします")
+                address_control.type_keys("^a{DEL}")
+                address_control.type_keys(target_path_str, with_spaces=True, set_focus=True)
+            address_control.type_keys("{ENTER}")
+            time.sleep(1)
+        else:
+            self.logger.warning("アドレスバーが見つからないため、ファイル名欄にフルパスを入力します")
+            use_full_path = True
 
         file_name_edit = self._find_control(
             save_dialog,
@@ -340,9 +365,13 @@ class AutomationScript:
         except (IndexError, AttributeError):
             default_name = "download.pdf"
             self.logger.debug("保存ダイアログ既定ファイル名取得に失敗、download.pdf を使用")
-        target_path = target_folder / default_name
-        self.logger.info(f"保存先パスを設定: {target_path}")
-        file_name_edit.set_edit_text(str(target_path))
+        final_name = Path(default_name).name or "download.pdf"
+        if use_full_path:
+            input_value = str(target_folder_path / final_name)
+        else:
+            input_value = final_name
+        self.logger.info(f"ファイル名欄に入力: {input_value}")
+        file_name_edit.set_edit_text(input_value)
 
         save_button = self._find_control(
             save_dialog,
