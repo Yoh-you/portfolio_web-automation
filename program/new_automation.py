@@ -316,6 +316,7 @@ class AutomationScript:
             r"^名前を付けて保存.*",
             r".*Save As.*",
         ]
+        self.logger.info(f"保存ダイアログ検出を開始 patterns={dialog_patterns} timeout={timeout}")
         save_dialog = self._wait_for_save_dialog(dialog_patterns, timeout)
         if save_dialog is None:
             self.logger.warning("保存ダイアログ接続失敗: ダイアログが見つかりませんでした")
@@ -335,8 +336,10 @@ class AutomationScript:
 
         try:
             default_name = file_name_edit.texts()[0]
+            self.logger.debug(f"保存ダイアログ既定ファイル名: {default_name}")
         except (IndexError, AttributeError):
             default_name = "download.pdf"
+            self.logger.debug("保存ダイアログ既定ファイル名取得に失敗、download.pdf を使用")
         target_path = target_folder / default_name
         self.logger.info(f"保存先パスを設定: {target_path}")
         file_name_edit.set_edit_text(str(target_path))
@@ -362,12 +365,15 @@ class AutomationScript:
 
     def _wait_for_save_dialog(self, title_patterns, timeout: int):
         deadline = time.time() + timeout
+        attempt = 1
         while time.time() < deadline:
             desktop = Desktop(backend="uia")
             for pattern in title_patterns:
                 try:
+                    self.logger.debug(f"[保存ダイアログ探索] attempt={attempt} pattern={pattern}")
                     dialog = desktop.window(title_re=pattern)
                     dialog.wait("visible", timeout=0.5)
+                    self.logger.info(f"保存ダイアログ検出成功 pattern={pattern}")
                     return dialog.wrapper_object()
                 except ElementNotFoundError:
                     continue
@@ -376,13 +382,17 @@ class AutomationScript:
                 except Exception as exc:
                     self.logger.debug(f"保存ダイアログ取得中に例外: {exc}")
                     continue
+            attempt += 1
             time.sleep(0.5)
+        self.logger.warning("保存ダイアログ検出に失敗しました（タイムアウト）")
         return None
 
     def _find_control(self, dialog, candidates):
         for props in candidates:
             try:
-                return dialog.child_window(**props).wrapper_object()
+                control = dialog.child_window(**props).wrapper_object()
+                self.logger.debug(f"コントロール検出成功 props={props}")
+                return control
             except ElementNotFoundError:
                 continue
             except Exception as exc:
