@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import pyautogui
 import tkinter as tk
-from pywinauto import Application, timings
+from pywinauto import Desktop, timings
 from pywinauto.findwindows import ElementNotFoundError
 import yaml
 import keyboard
@@ -310,19 +310,15 @@ class AutomationScript:
         return False
 
     def _handle_save_as_dialog(self, target_folder: Path) -> bool:
-        dialog_title_re = r"^名前を付けて保存"
         timeout = self.config.wait_time.get('save_pdf', 5) + 10
-        try:
-            save_dialog = timings.wait_until_passes(
-                timeout,
-                0.5,
-                lambda: Application(backend="uia")
-                .connect(title_re=dialog_title_re, timeout=1)
-                .window(title_re=dialog_title_re)
-                .wrapper_object()
-            )
-        except Exception as exc:
-            self.logger.warning(f"保存ダイアログ接続失敗: {exc}")
+        dialog_patterns = [
+            r"^名前を付けて保存.*Microsoft Edge",
+            r"^名前を付けて保存.*",
+            r".*Save As.*",
+        ]
+        save_dialog = self._wait_for_save_dialog(dialog_patterns, timeout)
+        if save_dialog is None:
+            self.logger.warning("保存ダイアログ接続失敗: ダイアログが見つかりませんでした")
             return False
 
         file_name_edit = self._find_control(
@@ -363,6 +359,25 @@ class AutomationScript:
         except Exception as exc:
             self.logger.warning(f"保存ボタンのクリックに失敗しました: {exc}")
             return False
+
+    def _wait_for_save_dialog(self, title_patterns, timeout: int):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            desktop = Desktop(backend="uia")
+            for pattern in title_patterns:
+                try:
+                    dialog = desktop.window(title_re=pattern)
+                    dialog.wait("visible", timeout=0.5)
+                    return dialog.wrapper_object()
+                except ElementNotFoundError:
+                    continue
+                except timings.TimeoutError:
+                    continue
+                except Exception as exc:
+                    self.logger.debug(f"保存ダイアログ取得中に例外: {exc}")
+                    continue
+            time.sleep(0.5)
+        return None
 
     def _find_control(self, dialog, candidates):
         for props in candidates:
