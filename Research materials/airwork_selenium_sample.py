@@ -615,9 +615,9 @@ def main():
     """
     
     # TODO: 実際の認証情報に置き換え
-    AIRWORK_URL = "https://ats.rct.airwork.net/interaction"
-    USERNAME = "honsha@shain001"
-    PASSWORD = "Luft@001"
+    AIRWORK_URL = ""
+    USERNAME = ""
+    PASSWORD = ""
     
     # ダウンロード先ディレクトリ（Noneを指定すると、クラス変数のtarget_pathが使用される）
     DOWNLOAD_DIR = None

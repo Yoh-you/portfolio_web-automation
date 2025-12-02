@@ -5,6 +5,9 @@ template_path: 'outlookmail_送付フォーマット.xlsx'
 
 secrets_file: 'secrets.yaml'
 
+contact_sheet_name: '応募者共有先リスト'
+body_sheet_name: 'メール本文_テンプレート'
+
 wait_time:
   browser: 5
   click: 5

@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import pyautogui
@@ -17,6 +17,7 @@ import keyboard
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from openpyxl import load_workbook
 from retry import retry
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -41,6 +42,8 @@ class AutomationConfig:
     login_info: Dict[str, str]
     webdriver_path: Optional[str] = None
     secrets_file: str = "secrets.yaml"
+    contact_sheet_name: Optional[str] = None
+    body_sheet_name: Optional[str] = None
 
 
 class AutomationError(Exception):
@@ -173,16 +176,19 @@ class AutomationScript:
         user = wait.until(EC.presence_of_element_located((By.ID, "account")))
         user.clear()
         user.send_keys(self.config.login_info['username'])
+        time.sleep(2)
         pwd = wait.until(EC.presence_of_element_located((By.ID, "password")))
         pwd.clear()
         pwd.send_keys(self.config.login_info['password'])
+        time.sleep(2)
         wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@id='mainContent']/div/div[2]/div[4]/input"))).click()
-        time.sleep(self.config.wait_time.get('browser', 6))
+        time.sleep(max(2, self.config.wait_time.get('browser', 6)))
 
     def navigate_entries(self) -> None:
         if not self.browser_wait:
             raise AutomationError("WebDriverが初期化されていません")
         self.logger.info("応募者一覧へ遷移します")
+        time.sleep(5)
         self.browser_wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@id='__next']/header/div/nav/ul/li[3]/a"))).click()
         time.sleep(self.config.wait_time.get('browser', 4))
 
@@ -227,7 +233,119 @@ class AutomationScript:
         df = pd.read_csv(csv_path)
         df = df.iloc[:, [1, 4, 8, 29, 36]]
         df.columns = ["B", "E", "I", "AD", "AK"]
+        df["AD"] = df["AD"].apply(self.clean_branch_name)
         return df
+
+    def clean_branch_name(self, text: Any) -> str:
+        if not isinstance(text, str):
+            return ""
+        parts = text.split('　')
+        cleaned = parts[-1] if len(parts) > 1 else text
+        return cleaned.strip()
+
+    def build_record_file_stem(self, row: pd.Series) -> str:
+        def normalize(value: Any) -> str:
+            if isinstance(value, str):
+                return value.strip()
+            if pd.isna(value):
+                return ""
+            return str(value).strip()
+
+        parts: List[str] = []
+        for key in ("B", "AD", "AK"):
+            part = normalize(row.get(key))
+            if part:
+                parts.append(part)
+        combined = "_".join(parts)
+        safe_stem = "".join(c for c in combined if c.isalnum() or c in ("_", "-", " "))
+        safe_stem = safe_stem.strip()
+        return safe_stem or "resume"
+
+    def resolve_template_path(self) -> Path:
+        base_dir = Path(__file__).parent
+        candidate = Path(self.config.template_path)
+        if not candidate.is_absolute():
+            candidate = base_dir / candidate
+        if not candidate.exists():
+            fallback = base_dir / "outlookmail_送付フォーマット.xlsx"
+            if fallback.exists():
+                self.logger.warning(f"テンプレートファイルが見つからないため {fallback} を使用します")
+                candidate = fallback
+            else:
+                raise AutomationError("メールテンプレートファイルが見つかりません")
+        return candidate
+
+    def load_template_data(self) -> None:
+        path = self.resolve_template_path()
+        try:
+            wb = load_workbook(path, data_only=True)
+        except Exception as exc:
+            raise AutomationError(f"テンプレートファイルの読み込みに失敗しました: {exc}")
+
+        sheet_names = wb.sheetnames
+        if not sheet_names:
+            raise AutomationError("テンプレートファイルにシートが存在しません")
+
+        contact_sheet_name = self.config.contact_sheet_name or sheet_names[0]
+        if contact_sheet_name not in sheet_names:
+            raise AutomationError(f"指定された連絡先シートが見つかりません: {contact_sheet_name}")
+
+        try:
+            contact_df = pd.read_excel(path, sheet_name=contact_sheet_name, engine="openpyxl")
+        except Exception as exc:
+            raise AutomationError(f"連絡先リストの読み込みに失敗しました: {exc}")
+
+        contact_df = contact_df.rename(
+            columns={
+                "拠点名": "branch",
+                "担当者": "person",
+                "To:": "to",
+                "Cc:": "cc",
+            }
+        )
+        contact_df["branch_norm"] = contact_df["branch"].apply(self.clean_branch_name)
+        self.contact_df = contact_df
+
+        body_sheet_name = self.config.body_sheet_name
+        if body_sheet_name and body_sheet_name not in sheet_names:
+            raise AutomationError(f"指定されたメール本文シートが見つかりません: {body_sheet_name}")
+
+        if body_sheet_name:
+            template_sheet = wb[body_sheet_name]
+        else:
+            sheets = wb.worksheets
+            template_sheet = sheets[1] if len(sheets) > 1 else sheets[0]
+
+        try:
+            self.mail_subject_template = (template_sheet["B1"].value or "").strip()
+            raw_body = template_sheet["B2"].value or ""
+            self.mail_body_template = str(raw_body).replace("%0a", "\n").strip()
+        except Exception as exc:
+            raise AutomationError(f"メール本文テンプレートの読み込みに失敗しました: {exc}")
+
+    def find_contact_by_branch(self, branch_name: str) -> Optional[pd.Series]:
+        if not hasattr(self, "contact_df"):
+            return None
+        target = self.clean_branch_name(branch_name)
+        if not target:
+            return None
+        df = self.contact_df
+        matches = df[df["branch_norm"] == target]
+        if matches.empty:
+            return None
+        return matches.iloc[0]
+
+    def build_attachments(self, stem: str) -> List[Path]:
+        folder = Path(self.config.download_folder).expanduser().resolve()
+        pdf_candidates = list(folder.glob(f"{stem}*.pdf"))
+        if not pdf_candidates:
+            raise AutomationError(f"PDFが見つかりません: {stem}")
+        attachments: List[Path] = [max(pdf_candidates, key=lambda p: p.stat().st_mtime)]
+
+        png_candidates = list(folder.glob(f"{stem}*.png"))
+        if png_candidates:
+            attachments.append(max(png_candidates, key=lambda p: p.stat().st_mtime))
+        return attachments
 
     def confirm_csv_data(self, df: pd.DataFrame) -> bool:
         """B/E/I/AD/AK列の内容をダイアログで表示"""
@@ -352,30 +470,35 @@ class AutomationScript:
                 time.sleep(1)
             except Exception as exc:
                 self.logger.warning(f"前の画面への戻りに失敗しました: {exc}")
-        return final_path
+        return target_path
 
-    def collect_attachment(self) -> Path:
-        self.logger.info("添付ファイル候補を探します")
-        folder = Path(self.config.download_folder).expanduser().resolve()
-        candidates = list(folder.glob("*.pdf")) + list(folder.glob("*.png"))
-        if not candidates:
-            raise AutomationError("添付ファイルが見つかりません")
-        latest = max(candidates, key=lambda f: f.stat().st_mtime)
-        return latest
-
-    def send_email(self, branch: str, ak_value: str, applicant_address: str = "") -> None:
+    def send_email(self, contact: pd.Series, attachments: List[Path]) -> None:
         if win32com is None:
             raise AutomationError("win32com がインポートできません")
-        self.logger.info(f"{branch} へのメールを生成します")
+        to_addr = str(contact.get("to", "")).strip()
+        cc_addr = str(contact.get("cc", "")).strip()
+        person = str(contact.get("person", "")).strip()
+
+        subject = (getattr(self, "mail_subject_template", "") or "").strip()
+        body_template = getattr(self, "mail_body_template", "") or ""
+        greeting = f"{person} さん" if person else ""
+        if greeting and body_template:
+            body = f"{greeting}\n\n{body_template}"
+        elif greeting:
+            body = f"{greeting}\n\n"
+        else:
+            body = body_template
+
+        self.logger.info(f"メールを生成します To={to_addr} Cc={cc_addr} 件名={subject}")
         mail = win32com.client.Dispatch("Outlook.Application").CreateItem(0)
-        mail.To = ""
-        mail.CC = ""
-        mail.Subject = f"{branch} レジュメ送付"
-        mail.Body = f"住所: {applicant_address}\nAK: {ak_value}"
-        attachment = self.collect_attachment()
-        mail.Attachments.Add(str(attachment))
+        mail.To = to_addr
+        mail.CC = cc_addr
+        mail.Subject = subject
+        mail.Body = body
+        for attachment in attachments:
+            mail.Attachments.Add(str(attachment))
         mail.Send()
-        self.logger.info(f"メール送信: {attachment.name}")
+        self.logger.info("メール送信が完了しました")
 
     def close_overlay(self) -> None:
         if not self.browser_wait:
@@ -387,6 +510,19 @@ class AutomationScript:
         except Exception:
             pass
 
+    def update_application_status(self, status_value: str = "04") -> None:
+        if not self.browser_wait:
+            return
+        try:
+            select_elem = self.browser_wait.until(
+                EC.element_to_be_clickable((By.XPATH, "(//select[@data-select='selectBoxTable'])[1]"))
+            )
+            Select(select_elem).select_by_value(status_value)
+            time.sleep(self.config.wait_time.get('click', 2))
+            self.logger.info(f"ステータスを {status_value} に更新しました")
+        except Exception as exc:
+            self.logger.warning(f"ステータス更新に失敗しました: {exc}")
+
     def show_dialog(self, message: str, is_error: bool = False) -> None:
         root = tk.Tk()
         root.withdraw()
@@ -395,12 +531,6 @@ class AutomationScript:
         else:
             messagebox.showinfo("通知", message)
         root.destroy()
-
-    def save_screenshot(self, prefix: str) -> None:
-        screenshot_dir = Path("screenshots")
-        screenshot_dir.mkdir(exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        pyautogui.screenshot(str(screenshot_dir / f"{prefix}_{timestamp}.png"))
 
     def cleanup(self) -> None:
         self.running = False
@@ -424,25 +554,40 @@ class AutomationScript:
             if not self.confirm_csv_data(df):
                 self.show_dialog("CSV確認で中断しました", is_error=True)
                 return
+            self.load_template_data()
             for _, row in df.iterrows():
                 self.wait_if_paused()
+                overlay_closed = False
                 try:
                     if int(row["E"]) >= 55:
                         self.logger.info("55歳以上のためスキップ")
                         continue
                     pdf_url = self.search_and_open(row["B"])
                     time.sleep(self.config.wait_time.get('browser', 3))
+                    record_stem = self.build_record_file_stem(row)
                     success = True
                     try:
-                        self.download_pdf_from_url(pdf_url, f"{row['B']}_{row['E']}")
+                        pdf_path = self.download_pdf_from_url(pdf_url, record_stem)
                     except Exception as exc:
                         success = False
                         self.logger.warning(f"PDFダウンロードに失敗しました: {exc}")
-                        self.save_screenshot(row["B"])
                     if success:
-                        self.send_email(row["AD"], row["AK"], row["I"])
+                        contact = self.find_contact_by_branch(row["AD"])
+                        if contact is None:
+                            self.logger.warning(f"支店名に一致する送信先が見つかりません: {row['AD']}")
+                            continue
+                        try:
+                            attachments = self.build_attachments(record_stem)
+                        except Exception as exc:
+                            self.logger.warning(f"添付ファイルが見つかりません: {exc}")
+                            continue
+                        self.send_email(contact, attachments)
+                        self.close_overlay()
+                        overlay_closed = True
+                        self.update_application_status("04")
                 finally:
-                    self.close_overlay()
+                    if not overlay_closed:
+                        self.close_overlay()
         except Exception as exc:
             self.logger.error("処理中に致命的なエラーが発生しました")
             self.logger.exception(exc)
