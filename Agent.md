@@ -16,8 +16,8 @@
 - ユーザーからファイル書き換えの指示を受けた時は、"airwork-project\Research materials"に納められた以下のファイルを参照(または模倣)してください。_
 また、同ディレクトリに納められている他の資料ファイルも必要に応じて参考にすること。
 ### 対象ファイル
-- \bak-new_automation.py (当ファイルを「バックアップファイル」という名前で指す)
-- \airwork_selenium_sample.py (当ファイルを「サンプルファイル」という名前で指す)
+- airwork-project\Research materials\bak-new_automation.py (当ファイルを「バックアップファイル」という名前で指す)
+- airwork-project\Research materials\airwork_selenium_sample.py (当ファイルを「サンプルファイル」という名前で指す)
 
 
 ## 【許可される操作】

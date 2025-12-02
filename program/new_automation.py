@@ -14,7 +14,7 @@ import requests
 import tkinter as tk
 import yaml
 import keyboard
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from openpyxl import load_workbook
@@ -34,14 +34,13 @@ except ImportError:
 
 @dataclass
 class AutomationConfig:
-    edge_path: str
+    edge_path: Optional[str] = None
     download_folder: str
     template_path: str
     url: str
     wait_time: Dict[str, int]
     login_info: Dict[str, str]
     webdriver_path: Optional[str] = None
-    secrets_file: str = "secrets.yaml"
     contact_sheet_name: Optional[str] = None
     body_sheet_name: Optional[str] = None
 
@@ -56,8 +55,10 @@ def check_password(password: str) -> bool:
     f = Fernet(key)
     try:
         return password == f.decrypt(cipher).decode()
-    except Exception:
+    except InvalidToken:
         return False
+    except Exception as exc:
+        raise AutomationError(f"パスワード復号処理でエラーが発生しました: {exc}")
 
 
 class AutomationScript:
@@ -96,16 +97,18 @@ class AutomationScript:
             raise AutomationError(f"設定ファイルが見つかりません: {config_path}")
         with open(config_path, encoding='utf-8') as f:
             data = yaml.safe_load(f) or {}
-        secrets_name = data.get('secrets_file') or 'secrets.yaml'
-        secrets_path = config_path.parent / secrets_name
-        if not secrets_path.exists():
-            raise AutomationError(f"secretsファイルが見つかりません: {secrets_path}")
-        with open(secrets_path, encoding='utf-8') as f:
-            secrets = yaml.safe_load(f) or {}
-        for required in ('url', 'login_info'):
-            if required not in secrets:
-                raise AutomationError(f"secrets.yaml に {required} が必要です")
-            data[required] = secrets[required]
+        if not data.get('edge_path'):
+            raise AutomationError("config.yaml に edge_path が設定されていません")
+        url = (data.get('url') or "").strip()
+        if not url:
+            raise AutomationError("config.yaml に url を設定してください")
+        login_info = data.get('login_info') or {}
+        username = (login_info.get('username') or "").strip()
+        password = (login_info.get('password') or "").strip()
+        if not username or not password:
+            raise AutomationError("config.yaml の login_info.username / login_info.password を設定してください")
+        data['url'] = url
+        data['login_info'] = {'username': username, 'password': password}
         return AutomationConfig(**data)
 
     def _monitor_esc(self) -> None:
@@ -143,9 +146,12 @@ class AutomationScript:
             "safebrowsing.enabled": True,
         }
         options.add_experimental_option("prefs", prefs)
-        edge_binary = (self.config.edge_path or "").replace("%s", "").strip()
+        edge_binary = self.resolve_edge_binary()
         if edge_binary:
             options.binary_location = edge_binary
+            self.logger.info(f"Edge実行ファイルを設定しました: {edge_binary}")
+        else:
+            self.logger.warning("edge_path が設定されていないため既定の Edge を使用します")
         self.logger.info("WebDriver の起動を試みます")
         if self.config.webdriver_path:
             service = webdriver.EdgeService(self.config.webdriver_path)
@@ -275,6 +281,13 @@ class AutomationScript:
                 raise AutomationError("メールテンプレートファイルが見つかりません")
         return candidate
 
+    def resolve_edge_binary(self) -> Optional[str]:
+        raw_path = (self.config.edge_path or "").replace("%s", "").strip()
+        if not raw_path:
+            return None
+        expanded = Path(raw_path).expanduser()
+        return str(expanded) if expanded.exists() else raw_path
+
     def load_template_data(self) -> None:
         path = self.resolve_template_path()
         try:
@@ -335,16 +348,21 @@ class AutomationScript:
             return None
         return matches.iloc[0]
 
-    def build_attachments(self, stem: str) -> List[Path]:
+    def build_attachments(self, stem: str, allow_png_only: bool = False) -> List[Path]:
         folder = Path(self.config.download_folder).expanduser().resolve()
         pdf_candidates = list(folder.glob(f"{stem}*.pdf"))
-        if not pdf_candidates:
-            raise AutomationError(f"PDFが見つかりません: {stem}")
-        attachments: List[Path] = [max(pdf_candidates, key=lambda p: p.stat().st_mtime)]
+        attachments: List[Path] = []
+        if pdf_candidates:
+            attachments.append(max(pdf_candidates, key=lambda p: p.stat().st_mtime))
 
         png_candidates = list(folder.glob(f"{stem}*.png"))
         if png_candidates:
             attachments.append(max(png_candidates, key=lambda p: p.stat().st_mtime))
+
+        if not attachments:
+            if allow_png_only and not pdf_candidates and png_candidates:
+                return attachments
+            raise AutomationError(f"添付ファイルが見つかりません: {stem}")
         return attachments
 
     def confirm_csv_data(self, df: pd.DataFrame) -> bool:
@@ -367,7 +385,7 @@ class AutomationScript:
         root.destroy()
         return result
 
-    def search_and_open(self, full_name: str) -> str:
+    def search_and_open(self, full_name: str) -> Optional[str]:
         if not self.browser_wait or not self.driver:
             raise AutomationError("WebDriverが初期化されていません")
         self.logger.info(f"応募者を検索します: {full_name}")
@@ -393,14 +411,18 @@ class AutomationScript:
             first_cell.click()
             self.logger.info("セルをクリックして詳細を開きました")
         time.sleep(1)
-        resume_button = self.browser_wait.until(
-            EC.presence_of_element_located((By.XPATH, "//a[@data-la='entry_detail_resume_btn_click']"))
-        )
-        pdf_url = resume_button.get_attribute("href")
-        if not pdf_url:
-            raise AutomationError("レジュメのPDF URLを取得できませんでした")
-        self.logger.info(f"レジュメPDFのURL: {pdf_url[:80]}...")
-        return pdf_url
+        try:
+            resume_button = self.browser_wait.until(
+                EC.presence_of_element_located((By.XPATH, "//a[@data-la='entry_detail_resume_btn_click']"))
+            )
+            pdf_url = resume_button.get_attribute("href")
+            if not pdf_url:
+                raise AutomationError("レジュメのPDF URLを取得できませんでした")
+            self.logger.info(f"レジュメPDFのURL: {pdf_url[:80]}...")
+            return pdf_url
+        except Exception as exc:
+            self.logger.warning(f"レジュメボタンが見つからないためスクリーンショットに切り替えます: {exc}")
+            return None
 
     def download_pdf_from_url(self, pdf_url: str, file_name: str) -> Path:
         if not self.driver:
@@ -472,7 +494,18 @@ class AutomationScript:
                 self.logger.warning(f"前の画面への戻りに失敗しました: {exc}")
         return target_path
 
-    def send_email(self, contact: pd.Series, attachments: List[Path]) -> None:
+    def capture_screenshot(self, stem: str) -> Path:
+        """レジュメが取得できない場合のスクリーンショット保存"""
+        folder = Path(self.config.download_folder).expanduser().resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        safe_stem = "".join(c for c in stem if c.isalnum() or c in ("_", "-", " ")).strip() or "screenshot"
+        target_path = folder / f"{safe_stem}.png"
+        img = pyautogui.screenshot()
+        img.save(str(target_path))
+        self.logger.info(f"スクリーンショットを保存しました: {target_path}")
+        return target_path
+
+    def send_email(self, contact: pd.Series, attachments: List[Path], applicant_email: str = "") -> None:
         if win32com is None:
             raise AutomationError("win32com がインポートできません")
         to_addr = str(contact.get("to", "")).strip()
@@ -482,12 +515,14 @@ class AutomationScript:
         subject = (getattr(self, "mail_subject_template", "") or "").strip()
         body_template = getattr(self, "mail_body_template", "") or ""
         greeting = f"{person} さん" if person else ""
-        if greeting and body_template:
-            body = f"{greeting}\n\n{body_template}"
-        elif greeting:
-            body = f"{greeting}\n\n"
-        else:
-            body = body_template
+        body_parts: List[str] = []
+        if greeting:
+            body_parts.append(greeting)
+        if applicant_email:
+            body_parts.append(f"応募者メール: {applicant_email}")
+        if body_template:
+            body_parts.append(body_template)
+        body = "\n\n".join(body_parts) if body_parts else body_template
 
         self.logger.info(f"メールを生成します To={to_addr} Cc={cc_addr} 件名={subject}")
         mail = win32com.client.Dispatch("Outlook.Application").CreateItem(0)
@@ -566,25 +601,37 @@ class AutomationScript:
                     time.sleep(self.config.wait_time.get('browser', 3))
                     record_stem = self.build_record_file_stem(row)
                     success = True
-                    try:
-                        pdf_path = self.download_pdf_from_url(pdf_url, record_stem)
-                    except Exception as exc:
-                        success = False
-                        self.logger.warning(f"PDFダウンロードに失敗しました: {exc}")
-                    if success:
-                        contact = self.find_contact_by_branch(row["AD"])
-                        if contact is None:
-                            self.logger.warning(f"支店名に一致する送信先が見つかりません: {row['AD']}")
-                            continue
+                    attachments: List[Path] = []
+                    pdf_downloaded = False
+                    if pdf_url:
                         try:
-                            attachments = self.build_attachments(record_stem)
+                            pdf_path = self.download_pdf_from_url(pdf_url, record_stem)
+                            pdf_downloaded = True
                         except Exception as exc:
-                            self.logger.warning(f"添付ファイルが見つかりません: {exc}")
-                            continue
-                        self.send_email(contact, attachments)
-                        self.close_overlay()
-                        overlay_closed = True
-                        self.update_application_status("04")
+                            self.logger.warning(f"PDFダウンロードに失敗しました: {exc}")
+                    if not pdf_downloaded:
+                        try:
+                            screenshot_path = self.capture_screenshot(record_stem)
+                            attachments.append(screenshot_path)
+                        except Exception as exc:
+                            self.logger.warning(f"スクリーンショット取得に失敗しました: {exc}")
+                    contact = self.find_contact_by_branch(row["AD"])
+                    if contact is None:
+                        self.logger.warning(f"支店名に一致する送信先が見つかりません: {row['AD']}")
+                        continue
+                    try:
+                        if pdf_downloaded:
+                            attachments = self.build_attachments(record_stem, allow_png_only=True)
+                        elif not attachments:
+                            attachments = self.build_attachments(record_stem, allow_png_only=True)
+                    except Exception as exc:
+                        self.logger.warning(f"添付ファイルが見つかりません: {exc}")
+                        continue
+                    applicant_email = str(row.get("I", "")).strip()
+                    self.send_email(contact, attachments, applicant_email=applicant_email)
+                    self.close_overlay()
+                    overlay_closed = True
+                    self.update_application_status("04")
                 finally:
                     if not overlay_closed:
                         self.close_overlay()
