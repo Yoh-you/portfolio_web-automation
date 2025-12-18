@@ -90,10 +90,7 @@ C:\Users\[ユーザー名]\Downloads\pdf
 ### 緊急停止
 - **ESCキー** - プログラムを即座に停止します
 
-### 一時停止・再開
-- **Alt + Spaceキー** - 処理を一時停止/再開します
-  - 一時停止中は「⏸」マークが表示されます
-  - 再度押すと処理が再開されます
+
 
 ## 📁 プロジェクト構成
 
@@ -116,12 +113,7 @@ airwork-project/
     ├── requirements.txt             # 必要なパッケージ一覧
     ├── outlookmail_送付フォーマット.xlsx  # メールテンプレート
     │
-    ├── images/                      # 画像認識用の画像ファイル
-    │   ├── image1.png ~ image14.png
-    │   ├── image1-half.png
-    │   ├── image6-half.png
-    │   ├── wait_image_1.png
-    │   └── wait_image_2.png
+
     │
     └── logs/                        # 実行ログ（自動生成）
         └── automation_YYYYMMDD_HHMMSS.log
@@ -196,14 +188,14 @@ login_info:
 ```
 **対処法**: 正しいパスワードを入力してください。
 
-#### 2. 画像認識エラー
+#### 2. 要素の取得エラー
 ```
-image〇〇が見つかりませんでした（タイムアウト）
+Message: element not visible
 ```
 **対処法**:
-- 画面解像度が変わっていないか確認
-- ブラウザのズーム倍率を100%に設定
-- 画像ファイルが`images`フォルダに存在するか確認
+- ページの読み込みが遅れている可能性があります
+- Airワークの画面レイアウトが変更された可能性があります
+- ブラウザのズーム倍率を100%に設定して再試行してください
 
 #### 3. CSVファイルが見つからない
 ```
@@ -243,7 +235,7 @@ program/logs/automation_YYYYMMDD_HHMMSS.log
 - 処理開始・終了時刻
 - 各ステップの実行状況
 - エラーメッセージとスタックトレース
-- 画像認識の成功/失敗
+- 処理の成功/失敗
 
 ## 🔐 セキュリティ
 
@@ -325,7 +317,6 @@ program/logs/automation_YYYYMMDD_HHMMSS.log
 - Airワーク自動操作機能実装
 - パスワード認証機能
 - ESCキー停止機能
-- Alt+Space一時停止機能
 - 処理完了通知機能
 
 ## 🎓 補足資料
@@ -344,5 +335,5 @@ program/logs/automation_YYYYMMDD_HHMMSS.log
 
 ---
 
-**最終更新日**: 2025年11月2日
+**最終更新日**: 2025年12月18日
 
