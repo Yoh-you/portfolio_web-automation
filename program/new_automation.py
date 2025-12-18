@@ -34,12 +34,13 @@ except ImportError:
 
 @dataclass
 class AutomationConfig:
-    edge_path: Optional[str] = None
+    edge_path: str
     download_folder: str
     template_path: str
     url: str
+    username: str
+    password: str
     wait_time: Dict[str, int]
-    login_info: Dict[str, str]
     webdriver_path: Optional[str] = None
     contact_sheet_name: Optional[str] = None
     body_sheet_name: Optional[str] = None
@@ -65,20 +66,17 @@ class AutomationScript:
     def __init__(self, config_path: str):
         self.setup_logging()
         self.config = self.load_config(config_path)
-        # pyautoguiの設定を追加
-        pyautogui.PAUSE = 0.5  # 各操作間に0.5秒の待機を設定
-        pyautogui.FAILSAFE = True  # フェイルセーフを有効化
-        # マウスを画面中央に移動（フォーカス問題の回避）
+        # pyautoguiの設定
+        pyautogui.PAUSE = 0.5
+        pyautogui.FAILSAFE = True
+        # マウスを画面中央に移動
         screen_width, screen_height = pyautogui.size()
         pyautogui.moveTo(screen_width // 2, screen_height // 2)
-        
+
         self.driver: Optional[webdriver.Edge] = None
         self.browser_wait: Optional[WebDriverWait] = None
         self.running = True
-        self.pause_lock = threading.Lock()
-        self.paused = False
         threading.Thread(target=self._monitor_esc, daemon=True).start()
-        threading.Thread(target=self._monitor_pause, daemon=True).start()
 
     def setup_logging(self) -> None:
         log_dir = Path(__file__).parent / "logs"
@@ -102,36 +100,24 @@ class AutomationScript:
         url = (data.get('url') or "").strip()
         if not url:
             raise AutomationError("config.yaml に url を設定してください")
-        login_info = data.get('login_info') or {}
-        username = (login_info.get('username') or "").strip()
-        password = (login_info.get('password') or "").strip()
+        username = (data.get('username') or "").strip()
+        password = (data.get('password') or "").strip()
         if not username or not password:
-            raise AutomationError("config.yaml の login_info.username / login_info.password を設定してください")
+            raise AutomationError("config.yaml に username/password を設定してください")
         data['url'] = url
-        data['login_info'] = {'username': username, 'password': password}
+        data['username'] = username
+        data['password'] = password
         return AutomationConfig(**data)
 
     def _monitor_esc(self) -> None:
         while self.running:
             if keyboard.is_pressed('esc'):
                 self.logger.warning("ESCキー検知：強制終了")
-                self.cleanup()
+                self.cleanup(close_browser=True)
                 os._exit(0)
             time.sleep(0.3)
 
-    def _monitor_pause(self) -> None:
-        while self.running:
-            if keyboard.is_pressed('alt') and keyboard.is_pressed('space'):
-                with self.pause_lock:
-                    self.paused = not self.paused
-                    msg = "一時停止" if self.paused else "再開"
-                    self.logger.info(f"▶ {msg}")
-                time.sleep(0.5)
-            time.sleep(0.3)
 
-    def wait_if_paused(self) -> None:
-        while self.paused:
-            time.sleep(0.5)
 
     def start_webdriver(self) -> webdriver.Edge:
         options = EdgeOptions()
@@ -181,11 +167,11 @@ class AutomationScript:
         time.sleep(self.config.wait_time.get('click', 2))
         user = wait.until(EC.presence_of_element_located((By.ID, "account")))
         user.clear()
-        user.send_keys(self.config.login_info['username'])
+        user.send_keys(self.config.username)
         time.sleep(2)
         pwd = wait.until(EC.presence_of_element_located((By.ID, "password")))
         pwd.clear()
-        pwd.send_keys(self.config.login_info['password'])
+        pwd.send_keys(self.config.password)
         time.sleep(2)
         wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@id='mainContent']/div/div[2]/div[4]/input"))).click()
         time.sleep(max(2, self.config.wait_time.get('browser', 6)))
@@ -216,11 +202,9 @@ class AutomationScript:
         if not self.browser_wait:
             raise AutomationError("WebDriverが未初期化です")
         self.logger.info("CSVダウンロードを開始します")
-        # JavaScriptで直接クリックして、確実に1回だけ実行
         download_button = self.browser_wait.until(
             EC.presence_of_element_located((By.XPATH, "//button[@data-la='entries_download_btn_click']"))
         )
-        # Seleniumのclick()ではなく、JavaScriptで実行して確実に1回だけ
         self.driver.execute_script("arguments[0].click();", download_button)
         time.sleep(self.config.wait_time.get('browser', 6))
 
@@ -366,22 +350,16 @@ class AutomationScript:
         return attachments
 
     def confirm_csv_data(self, df: pd.DataFrame) -> bool:
-        """B/E/I/AD/AK列の内容をダイアログで表示"""
         preview = df[['B', 'E', 'I', 'AD', 'AK']].head(5).to_string(index=False)
         root = tk.Tk()
-        root.withdraw()  # メインウィンドウは非表示
-        
-        # ダイアログを確実に前面に表示する設定
-        root.attributes('-topmost', True)  # 常に最前面に表示
-        root.lift()  # ウィンドウを前面に移動
-        root.focus_force()  # フォーカスを強制的に取得
-        
-        # ダイアログを表示
+        root.withdraw()
+        root.attributes('-topmost', True)
+        root.lift()
+        root.focus_force()
         result = messagebox.askokcancel(
             "CSVデータ確認",
             f"下記のデータで処理を開始します。\n\n{preview}\n\nOK→続行 / キャンセル→中断"
         )
-        
         root.destroy()
         return result
 
@@ -392,25 +370,29 @@ class AutomationScript:
         search_box = self.browser_wait.until(EC.presence_of_element_located((By.NAME, "searchWord")))
         search_box.clear()
         search_box.send_keys(full_name)
+        time.sleep(2)
         self.click_search()
         rows = self.browser_wait.until(EC.presence_of_all_elements_located((By.XPATH, "//td[contains(@class, 'styles_tdSelectionStatus')]")))
         if not rows:
             raise AutomationError("検索結果が見つかりません")
         self.logger.info("対応状況セルを開いて詳細画面へ遷移します")
+        time.sleep(2)
         try:
             first_row = self.browser_wait.until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "table tbody tr:first-child"))
             )
             first_row.click()
             self.logger.info("最初の行全体をクリックしました")
+            time.sleep(2)
         except Exception:
+            time.sleep(2)
             self.logger.warning("行全体のクリックに失敗したため、セルを再試行します")
+            time.sleep(2)
             first_cell = self.browser_wait.until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "table tbody tr:first-child td:first-child"))
             )
             first_cell.click()
             self.logger.info("セルをクリックして詳細を開きました")
-        time.sleep(1)
         try:
             resume_button = self.browser_wait.until(
                 EC.presence_of_element_located((By.XPATH, "//a[@data-la='entry_detail_resume_btn_click']"))
@@ -418,10 +400,13 @@ class AutomationScript:
             pdf_url = resume_button.get_attribute("href")
             if not pdf_url:
                 raise AutomationError("レジュメのPDF URLを取得できませんでした")
+            time.sleep(2)
             self.logger.info(f"レジュメPDFのURL: {pdf_url[:80]}...")
+            time.sleep(2)
             return pdf_url
         except Exception as exc:
             self.logger.warning(f"レジュメボタンが見つからないためスクリーンショットに切り替えます: {exc}")
+            time.sleep(2)
             return None
 
     def download_pdf_from_url(self, pdf_url: str, file_name: str) -> Path:
@@ -444,7 +429,6 @@ class AutomationScript:
             self.logger.debug("PDFダウンロード用の新規タブを開きました")
         except Exception as exc:
             self.logger.warning(f"新規タブの作成に失敗したため既存タブを使用します: {exc}")
-        # ビューア表示（あくまでユーザー確認用）。ダウンロード自体は requests で実行。
         try:
             self.driver.get(pdf_url)
         except Exception as exc:
@@ -495,7 +479,6 @@ class AutomationScript:
         return target_path
 
     def capture_screenshot(self, stem: str) -> Path:
-        """レジュメが取得できない場合のスクリーンショット保存"""
         folder = Path(self.config.download_folder).expanduser().resolve()
         folder.mkdir(parents=True, exist_ok=True)
         safe_stem = "".join(c for c in stem if c.isalnum() or c in ("_", "-", " ")).strip() or "screenshot"
@@ -508,13 +491,28 @@ class AutomationScript:
     def send_email(self, contact: pd.Series, attachments: List[Path], applicant_email: str = "") -> None:
         if win32com is None:
             raise AutomationError("win32com がインポートできません")
-        to_addr = str(contact.get("to", "")).strip()
-        cc_addr = str(contact.get("cc", "")).strip()
-        person = str(contact.get("person", "")).strip()
+
+        # To/CC/担当者の値を NaN や空白に対応しつつ安全に取得
+        to_raw = contact.get("to", "")
+        cc_raw = contact.get("cc", "")
+        person_raw = contact.get("person", "")
+
+        to_addr = ""
+        if pd.notna(to_raw):
+            to_addr = str(to_raw).strip()
+
+        cc_addr = ""
+        if pd.notna(cc_raw):
+            cc_addr = str(cc_raw).strip()
+
+        person = ""
+        if pd.notna(person_raw):
+            person = str(person_raw).strip()
 
         subject = (getattr(self, "mail_subject_template", "") or "").strip()
         body_template = getattr(self, "mail_body_template", "") or ""
         greeting = f"{person} さん" if person else ""
+
         body_parts: List[str] = []
         if greeting:
             body_parts.append(greeting)
@@ -527,7 +525,8 @@ class AutomationScript:
         self.logger.info(f"メールを生成します To={to_addr} Cc={cc_addr} 件名={subject}")
         mail = win32com.client.Dispatch("Outlook.Application").CreateItem(0)
         mail.To = to_addr
-        mail.CC = cc_addr
+        if cc_addr:
+            mail.CC = cc_addr
         mail.Subject = subject
         mail.Body = body
         for attachment in attachments:
@@ -567,15 +566,16 @@ class AutomationScript:
             messagebox.showinfo("通知", message)
         root.destroy()
 
-    def cleanup(self) -> None:
+    def cleanup(self, close_browser: bool = True) -> None:
         self.running = False
-        if self.driver:
+        if close_browser and self.driver:
             try:
                 self.driver.quit()
             except Exception:
                 pass
 
     def run(self) -> None:
+        success = False
         try:
             self.driver = self.start_webdriver()
             self.browser_wait = WebDriverWait(self.driver, self.config.wait_time.get('browser', 6) + 10)
@@ -591,21 +591,19 @@ class AutomationScript:
                 return
             self.load_template_data()
             for _, row in df.iterrows():
-                self.wait_if_paused()
                 overlay_closed = False
                 try:
                     if int(row["E"]) >= 55:
                         self.logger.info("55歳以上のためスキップ")
                         continue
                     pdf_url = self.search_and_open(row["B"])
-                    time.sleep(self.config.wait_time.get('browser', 3))
+                    time.sleep(2)
                     record_stem = self.build_record_file_stem(row)
-                    success = True
                     attachments: List[Path] = []
                     pdf_downloaded = False
                     if pdf_url:
                         try:
-                            pdf_path = self.download_pdf_from_url(pdf_url, record_stem)
+                            self.download_pdf_from_url(pdf_url, record_stem)
                             pdf_downloaded = True
                         except Exception as exc:
                             self.logger.warning(f"PDFダウンロードに失敗しました: {exc}")
@@ -615,6 +613,7 @@ class AutomationScript:
                             attachments.append(screenshot_path)
                         except Exception as exc:
                             self.logger.warning(f"スクリーンショット取得に失敗しました: {exc}")
+                    time.sleep(2)
                     contact = self.find_contact_by_branch(row["AD"])
                     if contact is None:
                         self.logger.warning(f"支店名に一致する送信先が見つかりません: {row['AD']}")
@@ -628,40 +627,52 @@ class AutomationScript:
                         self.logger.warning(f"添付ファイルが見つかりません: {exc}")
                         continue
                     applicant_email = str(row.get("I", "")).strip()
-                    self.send_email(contact, attachments, applicant_email=applicant_email)
+                    if pdf_downloaded:
+                        # PDF取得できた場合 → 応募者アドレスは本文に載せない
+                        self.send_email(contact, attachments, applicant_email="")
+                    else:
+                        # スクショのみの場合 → 応募者アドレスを本文に記載
+                        self.send_email(contact, attachments, applicant_email=applicant_email)
+                    time.sleep(2)
                     self.close_overlay()
                     overlay_closed = True
                     self.update_application_status("04")
+                    time.sleep(2)
                 finally:
                     if not overlay_closed:
                         self.close_overlay()
+                time.sleep(2)
+            success = True
         except Exception as exc:
             self.logger.error("処理中に致命的なエラーが発生しました")
             self.logger.exception(exc)
             raise
         finally:
-            self.cleanup()
+            if success:
+                # 正常終了時はブラウザを開いたままにする
+                self.cleanup(close_browser=False)
+            else:
+                # 例外時や強制終了時はブラウザも閉じる
+                self.cleanup(close_browser=True)
 
 
 def main() -> None:
     if len(sys.argv) < 2:
         print("パスワードが必要です")
         sys.exit(1)
-    
+
     password = sys.argv[1]
-    
-    # --verifyオプションが指定された場合の検証モード
+
     if len(sys.argv) > 2 and sys.argv[2] == "--verify":
         if not check_password(password):
             print("パスワードが違います")
             sys.exit(1)
-        sys.exit(0)  # 検証成功で終了
-    
-    # 通常実行モード
+        sys.exit(0)
+
     if not check_password(password):
         print("パスワードが違います")
         sys.exit(1)
-    
+
     config_path = Path(__file__).parent / "config.yaml"
     automation = AutomationScript(str(config_path))
     try:
