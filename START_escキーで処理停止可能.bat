@@ -3,49 +3,50 @@ setlocal enabledelayedexpansion
 
 :PASSWORD_INPUT
 cls
-echo ���s�m�F
+echo 実行確認
 
-set /p password="�p�X���[�h����͂��Ă�������: "
+set /p password="パスワードを入力してください: "
 
 cd /d "%~dp0program"
 
-rem �p�X���[�h����
+rem パスワード検証
 python new_automation.py !password! --verify
 if errorlevel 1 (
-    echo �p�X���[�h���Ⴂ�܂��B�ēx���͂��Ă��������B
+    echo パスワードが違います。再度入力してください。
     timeout /t 2 > nul
     goto PASSWORD_INPUT
 )
 
-rem �p�X���[�h���������ꍇ�̂ݎ��s�m�F��\��
+rem パスワードが正しい場合のみ実行確認を表示
 echo.
 echo ============================================
-echo �y��������z
-echo - Escape �L�[�������Ə����������I�����܂�
-echo - ���̏����Ń_�E�����[�h����уX�N���[���V���b�g���ꂽ�t�@�C���́A�S��"\Downloads\pdf"�ɕۑ�����܂��B
-echo - �K��N�����̉���҂Ɋւ��ẮA��قǕʒS���҂��Ή����܂��̂ŁA�u���Ή��v�t���O�̂܂܉������Ȃ��đ��v�ł��B
+echo 【操作説明】
+echo - Escape キーを押すと処理を強制終了します
+echo - Alt + Space キーで処理を一時停止・再開できます
+echo - この処理でダウンロードおよびスクリーンショットされたファイルは、全て"\Downloads\pdf"に保存されます。
+echo - 規定年齢より上の応募者に関しては、後ほど別担当者が対応しますので、「未対応」フラグのまま何もしなくて大丈夫です。
 echo.
-echo �y�m�F�����z
-echo - �u�_�E�����[�h�v�t�H���_�Ɂupef�v�t�H���_�͂���܂����H
-echo - Edge�̐ݒ�ŁA�_�E�����[�h��̃t�H���_����L�́updf�v�ɕύX���܂������H
-echo ���ڂ����͓��t�H���_�ւɂ������������������������B
+echo 【確認事項】
+echo - 「ダウンロード」フォルダに「pef」フォルダはありますか？
+echo - Edgeの設定で、ダウンロード先のフォルダを上記の「pdf」に変更しましたか？
+echo ※詳しくは同フォルダへにある説明動画をご覧ください。
 echo.
-echo �y���ӎ����z
-echo �}�E�X����ʂ̎l���ɒu���Ă����ԂŎ��s�����
-echo �G���[�ɂȂ�܂��B�l�����痣���čēx���s���Ă��������B
+echo 【注意事項】
+echo マウスが画面の四隅に置いてある状態で実行すると
+echo エラーになります。四隅から離して再度実行してください。
 echo.
-echo �H�Ƀ��W������Y���Ȃ�����҂����܂����A
-echo ���̏ꍇ�͑���ɉ���ҏ���ʂ������ŃX�N�V������܂��B
+echo 稀にレジュメを添えない応募者がいますが、
+echo その場合は代わりに応募者情報画面を自動でスクショされます。
 echo ============================================
 echo.
-choice /c YN /m "�v���O���������s���܂����H(Y=�͂� / N=������)"
+choice /c YN /m "プログラムを実行しますか？(Y=はい / N=いいえ)"
 if errorlevel 2 (
-    echo �v���O�������I�����܂�
+    echo プログラムを終了します
     pause
     exit
 )
 
-rem ���s�m�F��Yes�̏ꍇ�̂ݎ��s
+rem 実行確認でYesの場合のみ実行
 cls
 python new_automation.py !password!
 pause
