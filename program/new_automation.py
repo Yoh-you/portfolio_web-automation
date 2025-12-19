@@ -1,3 +1,5 @@
+import base64
+import getpass
 import logging
 import os
 import sys
@@ -62,6 +64,18 @@ def check_password(password: str) -> bool:
         raise AutomationError(f"パスワード復号処理でエラーが発生しました: {exc}")
 
 
+def derive_key(password: str, salt: bytes) -> bytes:
+    """パスワードから暗号化キーを生成（PBKDF2使用）"""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+    )
+    key = kdf.derive(password.encode())
+    return base64.urlsafe_b64encode(key)
+
+
 class AutomationScript:
     def __init__(self, config_path: str):
         self.setup_logging()
@@ -91,19 +105,50 @@ class AutomationScript:
 
     def load_config(self, path: str) -> AutomationConfig:
         config_path = Path(path)
-        if not config_path.exists():
-            raise AutomationError(f"設定ファイルが見つかりません: {config_path}")
-        with open(config_path, encoding='utf-8') as f:
-            data = yaml.safe_load(f) or {}
+        data = {}
+
+        if config_path.exists():
+            # 通常のconfig.yamlが見つかった場合
+            with open(config_path, encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+        else:
+            # config.yamlがない場合、config.encを探す
+            enc_path = config_path.with_suffix('.enc')
+            if enc_path.exists():
+                print("=" * 50)
+                print("設定ファイル復号")
+                print("=" * 50)
+                try:
+                    password = getpass.getpass("config.enc の復号パスワードを入力してください: ")
+                    
+                    with open(enc_path, 'rb') as f:
+                        salt = f.read(16)  # 最初の16バイトはソルト
+                        encrypted_data = f.read()
+
+                    key = derive_key(password, salt)
+                    fernet = Fernet(key)
+                    decrypted_data = fernet.decrypt(encrypted_data)
+                    
+                    # YAMLとしてロード
+                    data = yaml.safe_load(decrypted_data.decode('utf-8')) or {}
+                    self.logger.info("暗号化された設定ファイルを正常に読み込みました")
+                    
+                except InvalidToken:
+                    raise AutomationError("設定ファイルの復号に失敗: パスワードが間違っているか、ファイルが破損しています")
+                except Exception as exc:
+                    raise AutomationError(f"設定ファイルの復号中にエラーが発生しました: {exc}")
+            else:
+                raise AutomationError(f"設定ファイルが見つかりません。{config_path} または {enc_path} を配置してください")
+
         if not data.get('edge_path'):
-            raise AutomationError("config.yaml に edge_path が設定されていません")
+            raise AutomationError("設定ファイルに edge_path が設定されていません")
         url = (data.get('url') or "").strip()
         if not url:
-            raise AutomationError("config.yaml に url を設定してください")
+            raise AutomationError("設定ファイルに url を設定してください")
         username = (data.get('username') or "").strip()
         password = (data.get('password') or "").strip()
         if not username or not password:
-            raise AutomationError("config.yaml に username/password を設定してください")
+            raise AutomationError("設定ファイルに username/password を設定してください")
         data['url'] = url
         data['username'] = username
         data['password'] = password

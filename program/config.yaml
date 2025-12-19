@@ -1,19 +1,16 @@
 edge_path: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
-
 download_folder: '~/Downloads/pdf'
 template_path: 'outlookmail_送付フォーマット.xlsx'
 
-url: ''
-
-login_info:
-  username: ''
-  password: ''
+url: 'ここにアカウントURLを入力してください'
+username: 'ここにアカウントのIDを入力してください'
+password: 'ここにアカウントのパスワードを入力してください'
 
 contact_sheet_name: '応募者共有先リスト'
 body_sheet_name: 'メール本文_テンプレート'
 
 wait_time:
-  browser: 5
-  click: 5
-  email: 5
-  save_pdf: 5
+  browser: 6
+  click: 3
+  email: 2
+  save_pdf: 3

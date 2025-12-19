@@ -3,50 +3,49 @@ setlocal enabledelayedexpansion
 
 :PASSWORD_INPUT
 cls
-echo ŽÀsŠm”F
+echo ï¿½ï¿½ï¿½sï¿½mï¿½F
 
-set /p password="ƒpƒXƒ[ƒh‚ð“ü—Í‚µ‚Ä‚­‚¾‚³‚¢: "
+set /p password="ï¿½pï¿½Xï¿½ï¿½ï¿½[ï¿½hï¿½ï¿½ï¿½ï¿½Í‚ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½: "
 
 cd /d "%~dp0program"
 
-rem ƒpƒXƒ[ƒhŒŸØ
+rem ï¿½pï¿½Xï¿½ï¿½ï¿½[ï¿½hï¿½ï¿½ï¿½ï¿½
 python new_automation.py !password! --verify
 if errorlevel 1 (
-    echo ƒpƒXƒ[ƒh‚ªˆá‚¢‚Ü‚·BÄ“x“ü—Í‚µ‚Ä‚­‚¾‚³‚¢B
+    echo ï¿½pï¿½Xï¿½ï¿½ï¿½[ï¿½hï¿½ï¿½ï¿½á‚¢ï¿½Ü‚ï¿½ï¿½Bï¿½Ä“xï¿½ï¿½ï¿½Í‚ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B
     timeout /t 2 > nul
     goto PASSWORD_INPUT
 )
 
-rem ƒpƒXƒ[ƒh‚ª³‚µ‚¢ê‡‚Ì‚ÝŽÀsŠm”F‚ð•\Ž¦
+rem ï¿½pï¿½Xï¿½ï¿½ï¿½[ï¿½hï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ê‡ï¿½Ì‚ÝŽï¿½ï¿½sï¿½mï¿½Fï¿½ï¿½\ï¿½ï¿½
 echo.
 echo ============================================
-echo y‘€ìà–¾z
-echo - Escape ƒL[‚ð‰Ÿ‚·‚Æˆ—‚ð‹­§I—¹‚µ‚Ü‚·
-echo - Alt + Space ƒL[‚Åˆ—‚ðˆêŽž’âŽ~EÄŠJ‚Å‚«‚Ü‚·
-echo - ‚±‚Ìˆ—‚Åƒ_ƒEƒ“ƒ[ƒh‚¨‚æ‚ÑƒXƒNƒŠ[ƒ“ƒVƒ‡ƒbƒg‚³‚ê‚½ƒtƒ@ƒCƒ‹‚ÍA‘S‚Ä"\Downloads\pdf"‚É•Û‘¶‚³‚ê‚Ü‚·B
-echo - ‹K’è”N—î‚æ‚èã‚Ì‰ž•åŽÒ‚ÉŠÖ‚µ‚Ä‚ÍAŒã‚Ù‚Ç•Ê’S“–ŽÒ‚ª‘Î‰ž‚µ‚Ü‚·‚Ì‚ÅAu–¢‘Î‰žvƒtƒ‰ƒO‚Ì‚Ü‚Ü‰½‚à‚µ‚È‚­‚Ä‘åä•v‚Å‚·B
+echo ï¿½yï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½z
+echo - Escape ï¿½Lï¿½[ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Iï¿½ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½
+echo - ï¿½ï¿½ï¿½Ìï¿½ï¿½ï¿½ï¿½Åƒ_ï¿½Eï¿½ï¿½ï¿½ï¿½ï¿½[ï¿½hï¿½ï¿½ï¿½ï¿½ÑƒXï¿½Nï¿½ï¿½ï¿½[ï¿½ï¿½ï¿½Vï¿½ï¿½ï¿½bï¿½gï¿½ï¿½ï¿½ê‚½ï¿½tï¿½@ï¿½Cï¿½ï¿½ï¿½ÍAï¿½Sï¿½ï¿½"\Downloads\pdf"ï¿½É•Û‘ï¿½ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½B
+echo - ï¿½Kï¿½ï¿½Nï¿½ï¿½ï¿½ï¿½ï¿½Ì‰ï¿½ï¿½ï¿½Ò‚ÉŠÖ‚ï¿½ï¿½Ä‚ÍAï¿½ï¿½Ù‚Ç•Ê’Sï¿½ï¿½ï¿½Ò‚ï¿½ï¿½Î‰ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½Ì‚ÅAï¿½uï¿½ï¿½ï¿½Î‰ï¿½ï¿½vï¿½tï¿½ï¿½ï¿½Oï¿½Ì‚Ü‚Ü‰ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È‚ï¿½ï¿½Ä‘ï¿½ï¿½vï¿½Å‚ï¿½ï¿½B
 echo.
-echo yŠm”FŽ–€z
-echo - uƒ_ƒEƒ“ƒ[ƒhvƒtƒHƒ‹ƒ_‚ÉupefvƒtƒHƒ‹ƒ_‚Í‚ ‚è‚Ü‚·‚©H
-echo - Edge‚ÌÝ’è‚ÅAƒ_ƒEƒ“ƒ[ƒhæ‚ÌƒtƒHƒ‹ƒ_‚ðã‹L‚Ìupdfv‚É•ÏX‚µ‚Ü‚µ‚½‚©H
-echo ¦Ú‚µ‚­‚Í“¯ƒtƒHƒ‹ƒ_‚Ö‚É‚ ‚éà–¾“®‰æ‚ð‚²——‚­‚¾‚³‚¢B
+echo ï¿½yï¿½mï¿½Fï¿½ï¿½ï¿½ï¿½ï¿½z
+echo - ï¿½uï¿½_ï¿½Eï¿½ï¿½ï¿½ï¿½ï¿½[ï¿½hï¿½vï¿½tï¿½Hï¿½ï¿½ï¿½_ï¿½Éupefï¿½vï¿½tï¿½Hï¿½ï¿½ï¿½_ï¿½Í‚ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½H
+echo - Edgeï¿½ÌÝ’ï¿½ÅAï¿½_ï¿½Eï¿½ï¿½ï¿½ï¿½ï¿½[ï¿½hï¿½ï¿½Ìƒtï¿½Hï¿½ï¿½ï¿½_ï¿½ï¿½ï¿½ï¿½Lï¿½Ìupdfï¿½vï¿½É•ÏXï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½H
+echo ï¿½ï¿½ï¿½Ú‚ï¿½ï¿½ï¿½ï¿½Í“ï¿½ï¿½tï¿½Hï¿½ï¿½ï¿½_ï¿½Ö‚É‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B
 echo.
-echo y’ˆÓŽ–€z
-echo ƒ}ƒEƒX‚ª‰æ–Ê‚ÌŽl‹÷‚É’u‚¢‚Ä‚ ‚éó‘Ô‚ÅŽÀs‚·‚é‚Æ
-echo ƒGƒ‰[‚É‚È‚è‚Ü‚·BŽl‹÷‚©‚ç—£‚µ‚ÄÄ“xŽÀs‚µ‚Ä‚­‚¾‚³‚¢B
+echo ï¿½yï¿½ï¿½ï¿½ÓŽï¿½ï¿½ï¿½ï¿½z
+echo ï¿½}ï¿½Eï¿½Xï¿½ï¿½ï¿½ï¿½Ê‚ÌŽlï¿½ï¿½ï¿½É’uï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½Ô‚ÅŽï¿½ï¿½sï¿½ï¿½ï¿½ï¿½ï¿½
+echo ï¿½Gï¿½ï¿½ï¿½[ï¿½É‚È‚ï¿½Ü‚ï¿½ï¿½Bï¿½lï¿½ï¿½ï¿½ï¿½ï¿½ç—£ï¿½ï¿½ï¿½ÄÄ“xï¿½ï¿½ï¿½sï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B
 echo.
-echo ‹H‚ÉƒŒƒWƒ…ƒ‚ð“Y‚¦‚È‚¢‰ž•åŽÒ‚ª‚¢‚Ü‚·‚ªA
-echo ‚»‚Ìê‡‚Í‘ã‚í‚è‚É‰ž•åŽÒî•ñ‰æ–Ê‚ðŽ©“®‚ÅƒXƒNƒVƒ‡‚³‚ê‚Ü‚·B
+echo ï¿½Hï¿½Éƒï¿½ï¿½Wï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Yï¿½ï¿½ï¿½È‚ï¿½ï¿½ï¿½ï¿½ï¿½Ò‚ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½A
+echo ï¿½ï¿½ï¿½Ìê‡ï¿½Í‘ï¿½ï¿½ï¿½É‰ï¿½ï¿½ï¿½Òï¿½ï¿½ï¿½Ê‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ÅƒXï¿½Nï¿½Vï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½B
 echo ============================================
 echo.
-choice /c YN /m "ƒvƒƒOƒ‰ƒ€‚ðŽÀs‚µ‚Ü‚·‚©H(Y=‚Í‚¢ / N=‚¢‚¢‚¦)"
+choice /c YN /m "ï¿½vï¿½ï¿½ï¿½Oï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½ï¿½H(Y=ï¿½Í‚ï¿½ / N=ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½)"
 if errorlevel 2 (
-    echo ƒvƒƒOƒ‰ƒ€‚ðI—¹‚µ‚Ü‚·
+    echo ï¿½vï¿½ï¿½ï¿½Oï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Iï¿½ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½
     pause
     exit
 )
 
-rem ŽÀsŠm”F‚ÅYes‚Ìê‡‚Ì‚ÝŽÀs
+rem ï¿½ï¿½ï¿½sï¿½mï¿½Fï¿½ï¿½Yesï¿½Ìê‡ï¿½Ì‚ÝŽï¿½ï¿½s
 cls
 python new_automation.py !password!
 pause

@@ -70,3 +70,11 @@ $RECYCLE.BIN/
 # PDFファイル（ダウンロードされたもの）
 *.pdf
 
+
+# Documentation & Agent files
+当プログラムの案内.docx
+Agent.md
+
+# Development & Research folders
+ToDo/
+Research materials/

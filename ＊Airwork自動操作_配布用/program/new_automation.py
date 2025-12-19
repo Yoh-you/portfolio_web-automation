@@ -1,1338 +1,732 @@
-import pyautogui
-from PIL import Image, ImageEnhance
-import time
-import os
-import webbrowser
-import pyperclip
-import pandas as pd
+import base64
+import getpass
 import logging
-import yaml
-from pathlib import Path
-from datetime import datetime
-from typing import Optional, Dict, Any
-from dataclasses import dataclass
-from retry import retry
-import keyboard
+import os
 import sys
 import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+import pyautogui
+import requests
 import tkinter as tk
-from tkinter import messagebox
-from cryptography.fernet import Fernet
+import yaml
+import keyboard
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-import queue
-import getpass
-import base64
+from openpyxl import load_workbook
+from retry import retry
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.edge.options import Options as EdgeOptions
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select, WebDriverWait
+from tkinter import messagebox
 
-# プログラム実行パスワード設定（setup.pyで生成された情報）
-def check_password(password: str) -> bool:
-    # 暗号化キー（実際の運用では別途安全に保管）
-    KEY = b'yCh_OE7jEoX7S9aUMuk-CCNiJT_GIfb1ZHkLO8b5jbw='
-    
-    # 正しいPASSを暗号化した値
-    ENCRYPTED_VALID_PASSWORD = b'gAAAAABnwUPuHzq3v84PkAwHhqeiqE2WnXY-2IxdOoZeOHfyeKVTToWfh89_8WQRTPGxJFJ40aoorfQLbb0-3pMRgX-cA2m41g=='
-
-    # パスワードの検証
-    f = Fernet(KEY)
-    try:
-        decrypted_password = f.decrypt(ENCRYPTED_VALID_PASSWORD).decode()
-        return password == decrypted_password
-    except:
-        return False
-
-def main():
-    if len(sys.argv) < 2:
-        print("認証エラー：パスワードが必要です")
-        sys.exit(1)
-    
-    password = sys.argv[1]
-    
-    if len(sys.argv) > 2 and sys.argv[2] == "--verify":
-        if not check_password(password):
-            print("パスワードが違います")
-            sys.exit(1)
-        sys.exit(0)
-    
-    # 通常実行モード
-    if not check_password(password):
-        print("認証エラー：無効なパスワードです")
-        sys.exit(1)
-
-# メインの処理...
-    print("認証成功！プログラムを実行します")
+try:
+    import win32com.client
+except ImportError:
+    win32com = None
 
 
-if __name__ == "__main__":
-    main()
-    
-# 設定クラスの定義
 @dataclass
 class AutomationConfig:
     edge_path: str
     download_folder: str
     template_path: str
     url: str
+    username: str
+    password: str
     wait_time: Dict[str, int]
-    base_image_path: str
-    image_paths: Dict[str, Any]
-    confidence_level: float
-    login_info: Dict[str, str]
+    webdriver_path: Optional[str] = None
+    contact_sheet_name: Optional[str] = None
+    body_sheet_name: Optional[str] = None
+
 
 class AutomationError(Exception):
-    """自動化処理の例外クラス"""
     pass
 
+
+def check_password(password: str) -> bool:
+    key = b'yCh_OE7jEoX7S9aUMuk-CCNiJT_GIfb1ZHkLO8b5jbw='
+    cipher = b'gAAAAABnwUPuHzq3v84PkAwHhqeiqE2WnXY-2IxdOoZeOHfyeKVTToWfh89_8WQRTPGxJFJ40aoorfQLbb0-3pMRgX-cA2m41g=='
+    f = Fernet(key)
+    try:
+        return password == f.decrypt(cipher).decode()
+    except InvalidToken:
+        return False
+    except Exception as exc:
+        raise AutomationError(f"パスワード復号処理でエラーが発生しました: {exc}")
+
+
+def derive_key(password: str, salt: bytes) -> bytes:
+    """パスワードから暗号化キーを生成（PBKDF2使用）"""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+    )
+    key = kdf.derive(password.encode())
+    return base64.urlsafe_b64encode(key)
+
+
 class AutomationScript:
-
-    """
-    Airワーク自動化スクリプト
-    - ログイン処理
-    - CSVデータの取得と処理
-    - テキスト検索と画像認識
-    - メール送信
-    を自動化します
-    """
-
     def __init__(self, config_path: str):
-        """
-        初期化処理
-        Args:
-            config_path: 設定ファイルのパス
-        """
         self.setup_logging()
         self.config = self.load_config(config_path)
-        self.setup_environment()
-        self.image_paths = self.load_image_paths()  # 画像パスを読み込む
-        self.running = True  # 実行状態フラグ
-        self.paused = False  # 一時停止フラグ
-        self.pause_lock = threading.Lock()  # スレッドセーフな状態管理
-        self.start_esc_monitor()
-        self.start_pause_monitor()  # Alt+Space監視スレッド
+        # pyautoguiの設定
+        pyautogui.PAUSE = 0.5
+        pyautogui.FAILSAFE = True
+        # マウスを画面中央に移動
+        screen_width, screen_height = pyautogui.size()
+        pyautogui.moveTo(screen_width // 2, screen_height // 2)
 
-    def start_esc_monitor(self):
-        """ESCキー監視スレッドの開始"""
-        def monitor_esc():
-            while self.running:
-                try:
-                    if keyboard.is_pressed('esc'):
-                        self.logger.warning("ESCキーが押されたため、プログラムを終了します")
-                        self.cleanup()
-                        os._exit(0)  # 強制終了
-                    time.sleep(0.1)
-                except Exception as e:
-                    self.logger.error(f"ESCキー監視エラー: {str(e)}")
+        self.driver: Optional[webdriver.Edge] = None
+        self.browser_wait: Optional[WebDriverWait] = None
+        self.running = True
+        threading.Thread(target=self._monitor_esc, daemon=True).start()
 
-        self.esc_thread = threading.Thread(target=monitor_esc, daemon=True)
-        self.esc_thread.start()
-    
-    def start_pause_monitor(self):
-        """Alt+Spaceキー監視スレッドの開始"""
-        def monitor_pause():
-            while self.running:
-                try:
-                    # Alt+Spaceキーの組み合わせを監視
-                    if keyboard.is_pressed('alt') and keyboard.is_pressed('space'):
-                        with self.pause_lock:
-                            self.paused = not self.paused  # トグル（切り替え）
-                            if self.paused:
-                                self.logger.warning("⏸ プログラムを一時停止しました（Alt+Spaceで再開）")
-                            else:
-                                self.logger.info("▶ プログラムを再開しました")
-                        time.sleep(0.5)  # 連続押下防止
-                    time.sleep(0.1)
-                except Exception as e:
-                    self.logger.error(f"一時停止監視エラー: {str(e)}")
-        
-        self.pause_thread = threading.Thread(target=monitor_pause, daemon=True)
-        self.pause_thread.start()
-    
-    def wait_if_paused(self):
-        """一時停止中であれば待機"""
-        while self.paused and self.running:
-            time.sleep(0.5)
-
-    def show_dialog(self, message: str, is_error: bool = False):
-        """ダイアログを表示"""
-        try:
-            root = tk.Tk()
-            root.withdraw()  # メインウィンドウを非表示
-            
-            if is_error:
-                messagebox.showerror("エラー", message)
-            else:
-                messagebox.showinfo("通知", message)
-                
-            root.destroy()
-        except Exception as e:
-            self.logger.error(f"ダイアログ表示エラー: {str(e)}")
-    
-    def setup_logging(self):
-        """ログ設定"""
-        from pathlib import Path
-        script_dir = Path(__file__).parent  # スクリプトのディレクトリを取得
-        log_dir = script_dir / "logs"
+    def setup_logging(self) -> None:
+        log_dir = Path(__file__).parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"automation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-        
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s [%(levelname)s] %(message)s',
-            handlers=[
-                logging.FileHandler(log_file),
-                logging.StreamHandler()
-            ]
+            handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
         )
         self.logger = logging.getLogger(__name__)
 
-    def decrypt_config_file(self, encrypted_path: Path, password: str) -> str:
-        """
-        暗号化された設定ファイルを復号
-        
-        Args:
-            encrypted_path: 暗号化ファイルのパス (config.enc)
-            password: 復号パスワード
-            
-        Returns:
-            str: 復号されたYAML文字列
-        """
-        try:
-            # 暗号化ファイルを読み込み
-            with open(encrypted_path, 'rb') as f:
-                salt = f.read(16)  # 最初の16バイトはソルト
-                encrypted_data = f.read()
-            
-            # パスワードからキーを生成
-            kdf = PBKDF2HMAC(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=salt,
-                iterations=100000,
-            )
-            key = kdf.derive(password.encode())
-            key = base64.urlsafe_b64encode(key)
-            fernet = Fernet(key)
-            
-            # 復号
-            decrypted_data = fernet.decrypt(encrypted_data)
-            return decrypted_data.decode('utf-8')
-            
-        except Exception as e:
-            return None
+    def load_config(self, path: str) -> AutomationConfig:
+        config_path = Path(path)
+        data = {}
 
-    def load_config(self, config_path: str) -> AutomationConfig:
-        """設定ファイルの読み込み（暗号化対応）"""
-        try:
-            config_file = Path(config_path)
-            encrypted_file = config_file.parent / "config.enc"
-            
-            # config.yamlが存在する場合はそれを使用
-            if config_file.exists():
-                self.logger.info("config.yaml を読み込みます")
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config_data = yaml.safe_load(f)
-                return AutomationConfig(**config_data)
-            
-            # config.yamlが無く、config.encが存在する場合は復号して使用
-            elif encrypted_file.exists():
-                self.logger.info("暗号化された config.enc を検出しました")
-                
-                # パスワード入力（環境変数から取得、なければ入力）
-                config_password = os.environ.get('CONFIG_PASSWORD')
-                
-                # パスワードが正しくない場合は再入力を促す
-                while True:
-                    if not config_password:
-                        print("\n" + "=" * 50)
-                        print("設定ファイル復号")
-                        print("=" * 50)
-                        config_password = getpass.getpass("config.enc の復号パスワードを入力してください: ")
-                    
-                    # 復号を試行
-                    yaml_content = self.decrypt_config_file(encrypted_file, config_password)
-                    
-                    if yaml_content is not None:
-                        # 復号成功
-                        config_data = yaml.safe_load(yaml_content)
-                        self.logger.info("config.enc の復号に成功しました")
-                        return AutomationConfig(**config_data)
-                    else:
-                        # 復号失敗 - パスワードが間違っている
-                        print("パスワードが違います")
-                        config_password = None  # 再入力を促すためにリセット
-            
-            else:
-                raise AutomationError("config.yaml も config.enc も見つかりません")
-                
-        except AutomationError:
-            raise
-        except Exception as e:
-            raise AutomationError(f"設定ファイルの読み込みに失敗: {str(e)}")
-    
-    def wait_for_image(self, image_name: str, timeout: int = 30, use_grayscale: bool = True) -> bool:
-        """
-        画像が表示されるまで待機（クリックはしない）
-        Args:
-            image_name: 画像の名前
-            timeout: タイムアウトまでの秒数（デフォルト30秒）
-            use_grayscale: グレースケール検索を使うか（デフォルトTrue）
-        Returns:
-            bool: 成功したかどうか
-        """
-        self.logger.info(f"{image_name}の表示を待機中...")
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            try:
-                image_path = self.image_paths.get(image_name)
-                if not image_path:
-                    raise AutomationError(f"未定義の画像: {image_name}")
-                
-                location = pyautogui.locateOnScreen(
-                    image_path,
-                    confidence=self.config.confidence_level,
-                    grayscale=use_grayscale
-                )
-                
-                if location:
-                    self.logger.info(f"{image_name}の表示を確認")
-                    return True
-                    
-                time.sleep(1)  # 1秒待機して再試行
-                
-            except Exception as e:
-                self.logger.debug(f"待機中... {str(e)}")
-                time.sleep(1)
-                
-        self.logger.error(f"{image_name}が見つかりませんでした（タイムアウト）")
-        return False
-
-    def wait_and_click_image(self, image_name: str, timeout: int = 30, click_position: str = 'center', use_grayscale: bool = True) -> bool:
-        """
-        画像が表示されるまで待機してクリック
-        Args:
-            image_name: 画像の名前
-            timeout: タイムアウトまでの秒数（デフォルト30秒）
-            click_position: クリック位置（'center', 'left', 'right', 'top'）
-            use_grayscale: グレースケール検索を使うか（デフォルトTrue）
-        Returns:
-            bool: 成功したかどうか
-        """
-        self.logger.info(f"{image_name}の表示を待機中...")
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            try:
-                image_path = self.image_paths.get(image_name)
-                if not image_path:
-                    raise AutomationError(f"未定義の画像: {image_name}")
-                
-                location = pyautogui.locateOnScreen(
-                    image_path,
-                    confidence=self.config.confidence_level,
-                    grayscale=use_grayscale
-                )
-                
-                if location:
-                    # クリック位置の計算
-                    if click_position == 'left':
-                        click_x = location.left + (location.width * 0.25)  # 左から25%の位置
-                        click_y = location.top + (location.height // 2)
-                    elif click_position == 'right':
-                        click_x = location.left + (location.width * 0.75)  # 右から25%の位置
-                        click_y = location.top + (location.height // 2)
-                    elif click_position == 'top':
-                        click_x = location.left + (location.width // 2)  # 中央のX座標
-                        click_y = location.top + (location.height * 0.25)  # 上部25%の位置
-                    else:  # centerの場合
-                        click_x = location.left + (location.width // 2)
-                        click_y = location.top + (location.height // 2)
-                    
-                    pyautogui.click(click_x, click_y)
-                    self.logger.info(f"{image_name}のクリックに成功")
-                    return True
-                    
-                time.sleep(1)  # 1秒待機して再試行
-                
-            except Exception as e:
-                self.logger.debug(f"待機中... {str(e)}")
-                time.sleep(1)
-                
-        self.logger.error(f"{image_name}が見つかりませんでした（タイムアウト）")
-        return False
-
-    def setup_environment(self):
-        """環境設定"""
-        try:
-            # フェイルセーフの調整（必要に応じて）
-            pyautogui.FAILSAFE = True  # 安全機能は維持
-            pyautogui.PAUSE = 0.5
-            
-            # マウス初期位置を画面中央に設定
-            screen_width, screen_height = pyautogui.size()
-            pyautogui.moveTo(screen_width // 2, screen_height // 2)
-            
-            # ブラウザの登録
-            webbrowser.register('edge', None, 
-                              webbrowser.BackgroundBrowser(self.config.edge_path))
-                              
-        except pyautogui.FailSafeException:
-            # FailSafeExceptionはそのまま再投げしてメインハンドラーでキャッチさせる
-            raise
-        except Exception as e:
-            raise AutomationError(f"環境設定に失敗: {str(e)}")
-
-    def load_image_paths(self) -> Dict[str, str]:
-        """画像パスを動的に生成"""
-        try:
-            base_path = self.config.base_image_path
-            base_format = self.config.image_paths['base_format']
-            start = self.config.image_paths['start_number']
-            end = self.config.image_paths['end_number']
-            
-            paths = {
-                f'image{num}': base_format.format(
-                    base_path=base_path, 
-                    number=num
-                )
-                for num in range(start, end + 1)
-            }
-            
-            # 特定の画像の別名を追加
-            special_images = {
-                'login': paths['image1'],
-                'login_half': paths['image2'],  # ログイン情報入力用
-                'resume_open': paths['image9'],
-                'download': paths['image7'],
-                'resume_close': paths['image12'],
-                'search_box': paths['image6'],
-                'not_supported': paths['image8'],
-                'a_date': paths['image8'],
-                'iab': paths['image13'],
-                'fail': paths['image12'],
-                'save': paths['image10'],
-                'filename_field': paths['image11'],  # ファイル名欄用
-                'wait_image_1': f"{self.config.base_image_path}/wait_image_1.png",  # Excel待機用
-                'wait_image_2': f"{self.config.base_image_path}/wait_image_2.png",  # 履歴書オープン直後待機用
-                'wait_image_3': f"{self.config.base_image_path}/wait_image_3.png",  # PDF保存メニュー待機用
-                'wait_image_4': f"{self.config.base_image_path}/wait_image_4.png",  # Excel検索欄待機用
-                'wait_image_5': f"{self.config.base_image_path}/wait_image_5.png",  # 右クリックメニュー待機用
-                'wait_image_6': f"{self.config.base_image_path}/wait_image_6.png",  # メールフォーマット待機用
-                'wait_image_7': f"{self.config.base_image_path}/wait_image_7.png",  # 添付メニュー遷移待機用
-                'wait_image_8': f"{self.config.base_image_path}/wait_image_8.png",  # このPC参照表示待機用
-            }
-            paths.update(special_images)
-            
-            # デバッグ用：待機画像のパス確認
-            self.logger.info("=== 待機画像のパス確認 ===")
-            for wait_img in ['wait_image_1', 'wait_image_2', 'wait_image_3', 'wait_image_4', 'wait_image_5', 'wait_image_6', 'wait_image_7', 'wait_image_8']:
-                img_path = special_images.get(wait_img)
-                self.logger.info(f"{wait_img}のパス: {img_path}")
-                
-                # ファイルの存在確認
-                if img_path:
-                    full_path = Path(img_path)
-                    if full_path.exists():
-                        self.logger.info(f"  → ✓ {wait_img}が見つかりました")
-                    else:
-                        self.logger.warning(f"  → ✗ {wait_img}が見つかりません！")
-                        # 絶対パスでも確認
-                        abs_path = Path(__file__).parent / img_path
-                        if abs_path.exists():
-                            self.logger.info(f"  → ✓ 絶対パスでは見つかりました: {abs_path}")
-                        else:
-                            self.logger.warning(f"  → ✗ 絶対パスでも見つかりません: {abs_path}")
-            self.logger.info("========================")
-            
-            return paths
-        except Exception as e:
-            raise AutomationError(f"画像パス生成に失敗: {str(e)}")
-
-    @retry(tries=3, delay=2, backoff=2)
-    def click_image(self, image_name: str, use_grayscale: bool = False) -> None:
-        """画像認識によるクリック（リトライ機能付き）"""
-        image_path = self.image_paths.get(image_name)  # 修正
-        if not image_path:
-            raise AutomationError(f"未定義の画像: {image_name}")
-
-        self.logger.info(f"画像クリック試行: {image_name}")
-        image = pyautogui.locateOnScreen(
-            image_path, 
-            confidence=self.config.confidence_level,
-            grayscale=use_grayscale
-        )
-        
-        if image:
-            pyautogui.click(image)
-            time.sleep(self.config.wait_time.get('click', 2))
-            self.logger.info(f"画像クリック成功: {image_name}")
+        if config_path.exists():
+            # 通常のconfig.yamlが見つかった場合
+            with open(config_path, encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
         else:
-            raise AutomationError(f"画像が見つかりません: {image_name}")
-    
+            # config.yamlがない場合、config.encを探す
+            enc_path = config_path.with_suffix('.enc')
+            if enc_path.exists():
+                print("=" * 50)
+                print("設定ファイル復号")
+                print("=" * 50)
+                try:
+                    password = getpass.getpass("config.enc の復号パスワードを入力してください: ")
+                    
+                    with open(enc_path, 'rb') as f:
+                        salt = f.read(16)  # 最初の16バイトはソルト
+                        encrypted_data = f.read()
+
+                    key = derive_key(password, salt)
+                    fernet = Fernet(key)
+                    decrypted_data = fernet.decrypt(encrypted_data)
+                    
+                    # YAMLとしてロード
+                    data = yaml.safe_load(decrypted_data.decode('utf-8')) or {}
+                    self.logger.info("暗号化された設定ファイルを正常に読み込みました")
+                    
+                except InvalidToken:
+                    raise AutomationError("設定ファイルの復号に失敗: パスワードが間違っているか、ファイルが破損しています")
+                except Exception as exc:
+                    raise AutomationError(f"設定ファイルの復号中にエラーが発生しました: {exc}")
+            else:
+                raise AutomationError(f"設定ファイルが見つかりません。{config_path} または {enc_path} を配置してください")
+
+        if not data.get('edge_path'):
+            raise AutomationError("設定ファイルに edge_path が設定されていません")
+        url = (data.get('url') or "").strip()
+        if not url:
+            raise AutomationError("設定ファイルに url を設定してください")
+        username = (data.get('username') or "").strip()
+        password = (data.get('password') or "").strip()
+        if not username or not password:
+            raise AutomationError("設定ファイルに username/password を設定してください")
+        data['url'] = url
+        data['username'] = username
+        data['password'] = password
+        return AutomationConfig(**data)
+
+    def _monitor_esc(self) -> None:
+        while self.running:
+            if keyboard.is_pressed('esc'):
+                self.logger.warning("ESCキー検知：強制終了")
+                self.cleanup(close_browser=True)
+                os._exit(0)
+            time.sleep(0.3)
+
+
+
+    def start_webdriver(self) -> webdriver.Edge:
+        options = EdgeOptions()
+        options.use_chromium = True
+        options.add_argument("--start-maximized")
+        download_folder = Path(self.config.download_folder).expanduser().resolve()
+        download_folder.mkdir(parents=True, exist_ok=True)
+        prefs = {
+            "download.default_directory": str(download_folder),
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "safebrowsing.enabled": True,
+        }
+        options.add_experimental_option("prefs", prefs)
+        edge_binary = self.resolve_edge_binary()
+        if edge_binary:
+            options.binary_location = edge_binary
+            self.logger.info(f"Edge実行ファイルを設定しました: {edge_binary}")
+        else:
+            self.logger.warning("edge_path が設定されていないため既定の Edge を使用します")
+        self.logger.info("WebDriver の起動を試みます")
+        if self.config.webdriver_path:
+            service = webdriver.EdgeService(self.config.webdriver_path)
+            driver = webdriver.Edge(service=service, options=options)
+        else:
+            driver = webdriver.Edge(options=options)
+        driver.set_page_load_timeout(60)
+        try:
+            driver.execute_cdp_cmd(
+                "Page.setDownloadBehavior",
+                {
+                    "behavior": "allow",
+                    "downloadPath": str(download_folder),
+                    "eventsEnabled": True,
+                },
+            )
+        except Exception as exc:
+            self.logger.warning(f"ダウンロード設定の適用に失敗しました: {exc}")
+        return driver
+
+    def login(self) -> None:
+        if not self.browser_wait:
+            raise AutomationError("WebDriverが初期化されていません")
+        wait = self.browser_wait
+        self.logger.info("ログイン処理を開始します")
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@id='__next']/div/main/div[2]/div[2]/a"))).click()
+        time.sleep(self.config.wait_time.get('click', 2))
+        user = wait.until(EC.presence_of_element_located((By.ID, "account")))
+        user.clear()
+        user.send_keys(self.config.username)
+        time.sleep(2)
+        pwd = wait.until(EC.presence_of_element_located((By.ID, "password")))
+        pwd.clear()
+        pwd.send_keys(self.config.password)
+        time.sleep(2)
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@id='mainContent']/div/div[2]/div[4]/input"))).click()
+        time.sleep(max(2, self.config.wait_time.get('browser', 6)))
+
+    def navigate_entries(self) -> None:
+        if not self.browser_wait:
+            raise AutomationError("WebDriverが初期化されていません")
+        self.logger.info("応募者一覧へ遷移します")
+        time.sleep(5)
+        self.browser_wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@id='__next']/header/div/nav/ul/li[3]/a"))).click()
+        time.sleep(self.config.wait_time.get('browser', 4))
+
+    def filter_entries(self, status_value: str = "01") -> None:
+        wait = self.browser_wait
+        self.logger.info(f"ステータスを{status_value} に設定して検索します")
+        select_element = wait.until(EC.element_to_be_clickable((By.XPATH, "//select[@name='selectionStatus' and @data-select='selectBox']")))
+        Select(select_element).select_by_value(status_value)
+        self.click_search()
+        time.sleep(self.config.wait_time.get('browser', 4))
+
+    def click_search(self) -> None:
+        if not self.browser_wait:
+            raise AutomationError("WebDriverが未初期化です")
+        self.browser_wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@id='applicationList']/form/div/button"))).click()
+        time.sleep(self.config.wait_time.get('click', 2))
+
+    def download_entries(self) -> None:
+        if not self.browser_wait:
+            raise AutomationError("WebDriverが未初期化です")
+        self.logger.info("CSVダウンロードを開始します")
+        download_button = self.browser_wait.until(
+            EC.presence_of_element_located((By.XPATH, "//button[@data-la='entries_download_btn_click']"))
+        )
+        self.driver.execute_script("arguments[0].click();", download_button)
+        time.sleep(self.config.wait_time.get('browser', 6))
 
     def get_latest_csv(self) -> str:
-        """最新のCSVファイルを取得"""
-        try:
-            download_folder = Path(self.config.download_folder).expanduser().resolve()
-            csv_files = list(download_folder.glob('*.csv'))
-            if not csv_files:
-                raise AutomationError("CSVファイルが見つかりません")
-            
-            latest_csv = max(csv_files, key=lambda f: f.stat().st_ctime)
-            self.logger.info(f"最新CSVファイル: {latest_csv}")
-            return str(latest_csv)
-        except Exception as e:
-            raise AutomationError(f"CSVファイル取得エラー: {str(e)}")
+        folder = Path(self.config.download_folder).expanduser().resolve()
+        self.logger.info(f"ダウンロードフォルダからCSVを探します: {folder}")
+        csv_files = list(folder.glob("*.csv"))
+        if not csv_files:
+            raise AutomationError("CSVファイルが見つかりません")
+        latest = max(csv_files, key=lambda f: f.stat().st_ctime)
+        self.logger.info(f"最新CSV: {latest}")
+        return str(latest)
 
     def process_data(self, csv_path: str) -> pd.DataFrame:
-        """CSVデータの処理"""
-        try:
-            df = pd.read_csv(csv_path)
-            self.logger.info("CSVファイルの列名:")
-            self.logger.info(df.columns.tolist())
+        self.logger.info(f"CSVを読み込みます: {csv_path}")
+        df = pd.read_csv(csv_path)
+        df = df.iloc[:, [1, 4, 8, 29, 36]]
+        df.columns = ["B", "E", "I", "AD", "AK"]
+        df["AD"] = df["AD"].apply(self.clean_branch_name)
+        return df
 
-            # インデックス番号で列を取得（0がA, 1がB, 4がE, 8がI, 29がAD, 36がAK）
-            df_bx = pd.DataFrame()
-            df_bx['B'] = df.iloc[:, 1]    # B列（氏名）
-            df_bx['E'] = df.iloc[:, 4]    # E列（年齢）
-            df_bx['I'] = df.iloc[:, 8]    # I列（アドレス）
-            df_bx['AD'] = df.iloc[:, 29]   # AD列（支店名）
-            df_bx['AK'] = df.iloc[:, 36]   # AK列（新規追加データ）
+    def clean_branch_name(self, text: Any) -> str:
+        if not isinstance(text, str):
+            return ""
+        parts = text.split('　')
+        cleaned = parts[-1] if len(parts) > 1 else text
+        return cleaned.strip()
 
-            # AD列の文字列処理（既存のコード）
-            def clean_branch_name(text: str) -> str:
-                if not isinstance(text, str):
-                    return ""
-                parts = text.split('　')
-                if len(parts) > 1:
-                    self.logger.info(f"支店名抽出: '{text}' → '{parts[-1]}'")
-                    return parts[-1]
-                return text
+    def build_record_file_stem(self, row: pd.Series) -> str:
+        def normalize(value: Any) -> str:
+            if isinstance(value, str):
+                return value.strip()
+            if pd.isna(value):
+                return ""
+            return str(value).strip()
 
-            df_bx['AD'] = df_bx['AD'].apply(clean_branch_name)
-            
-            self.logger.info("データ処理完了")
-            return df_bx
-        except Exception as e:
-            raise AutomationError(f"データ処理エラー: {str(e)}")
+        parts: List[str] = []
+        for key in ("B", "AD", "AK"):
+            part = normalize(row.get(key))
+            if part:
+                parts.append(part)
+        combined = "_".join(parts)
+        safe_stem = "".join(c for c in combined if c.isalnum() or c in ("_", "-", " "))
+        safe_stem = safe_stem.strip()
+        return safe_stem or "resume"
 
-    @retry(tries=2, delay=1)
-    def find_and_click_text(self, text: str) -> None:
-        try:
-            self.logger.info(f"検索対象のフルネーム: '{text}'")
-
-            # 検索欄をクリック
-            self.logger.info("検索欄をクリック")
-            if not self.wait_and_click_image('search_box', timeout=30, click_position='left'):
-                raise AutomationError("検索欄が見つかりません")
-            time.sleep(1)
-            
-            # フルネームを検索欄に入力
-            pyautogui.hotkey('ctrl', 'a')
-            pyperclip.copy(text)
-            pyautogui.hotkey('ctrl', 'v')
-            
-            # 検索ボタンをクリック
-            self.logger.info("検索ボタンをクリック")
-            if not self.wait_and_click_image('search_box', timeout=30, click_position='right'):
-                raise AutomationError("検索ボタンが見つかりません")
-            
-            time.sleep(2)
-
-            # image10の左側をクリック
-            if not self.wait_and_click_image('a_date', timeout=30, click_position='left'):
-                raise AutomationError("候補が見つかりません")
-            time.sleep(2)
-
-        except Exception as e:
-            self.logger.error(f"テキスト検索エラー: {str(e)}")
-            raise
-
-    def send_email(self, branch_name: str, recipient: str, ak_value: str, applicant_address: str = "") -> None:
-        """メール送信とその後の処理"""
-        try:
-            # Adobe PDF画面閉じる
-            pyautogui.hotkey('ctrl', 'Q')
-            time.sleep(3)
-
-            # Excelウィンドウをアクティブ化
-            window = pyautogui.getWindowsWithTitle(
-                "outlookmail_送付フォーマット.xlsx")[0]
-            window.activate()
-            
-            # Excel内の特定要素が表示されるまで待機
-            self.logger.info("Excel内の要素表示を待機中...")
-            if not self.wait_for_image('wait_image_1', timeout=30):
-                raise AutomationError("Excelファイルの内容表示待機がタイムアウトしました")
-            
-            # メール作成までの処理
-            pyautogui.hotkey('ctrl', 'f')
-            self.logger.info("Excel検索ダイアログの表示を待機中...")
-            if not self.wait_for_image('wait_image_4', timeout=30):
-                raise AutomationError("Excel検索ダイアログの表示待機がタイムアウトしました")
-            time.sleep(1)
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(1)
-            pyautogui.hotkey('delete')
-            time.sleep(1)
-            pyperclip.copy(recipient)
-            time.sleep(1)
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(2)
-            pyautogui.press('enter')
-            time.sleep(2)
-            pyautogui.press('esc')
-            time.sleep(2)
-            
-            # カーソル移動とメニュー表示
-            for _ in range(4):
-                pyautogui.press('tab')
-            
-            pyautogui.hotkey('shift', 'f10')  # 右クリックメニュー
-            self.logger.info("右クリックメニューの表示を待機中...")
-            if not self.wait_for_image('wait_image_5', timeout=30):
-                raise AutomationError("右クリックメニューの表示待機がタイムアウトしました")
-            time.sleep(1)
-            pyautogui.press('o')
-            time.sleep(1)
-            pyautogui.press('o')
-            pyautogui.press('enter')
-            time.sleep(3)
-            
-            # メールフォーマット画面が表示されるまで待機
-            self.logger.info("メールフォーマット画面の表示を待機中...")
-            if not self.wait_for_image('wait_image_6', timeout=30):
-                raise AutomationError("メールフォーマット画面の表示待機がタイムアウトしました")
-            
-            # 支店名を貼り付け
-            pyperclip.copy(branch_name)
-            pyautogui.hotkey('ctrl', 'v')
-            self.logger.info("支店名をペーストしました")
-
-            # スペースキーを1回入力
-            pyautogui.press('space')
-
-            # 職種データをペースト
-            pyperclip.copy(ak_value)
-            pyautogui.hotkey('ctrl', 'v')
-            self.logger.info("職種データをペーストしました")
-
-            # 改行してからアドレスをペースト
-            pyautogui.press('enter')
-            time.sleep(2)
-            
-            # 応募者のアドレスをペースト（スクショの場合）
-            if applicant_address:
-                pyperclip.copy(applicant_address)
-                pyautogui.hotkey('ctrl', 'v')
-                self.logger.info(f"応募者アドレスをペーストしました: {applicant_address}")
-                time.sleep(2)
-
-            # 最新の添付ファイル名を取得（拡張子付き）
-            attachment_filename = self.get_latest_attachment_filename()
-            
-            # 新しいファイル添付方法（エクスプローラー経由）
-            self.logger.info(f"ファイルを添付します: {attachment_filename}")
-            
-            # 1. Alt+H → A → F → B でこのPC参照を開く
-            pyautogui.hotkey('alt', 'h')
-            time.sleep(1)
-            pyautogui.press('a')
-            time.sleep(1)
-            pyautogui.press('f')
-            self.logger.info("添付メニューの表示を待機中...")
-            if not self.wait_for_image('wait_image_7', timeout=30):
-                raise AutomationError("添付メニューの表示待機がタイムアウトしました")
-            time.sleep(1)
-            pyautogui.press('b')
-            time.sleep(1)
-            self.logger.info("参照ダイアログの表示を待機中...")
-            if not self.wait_for_image('wait_image_8', timeout=30):
-                raise AutomationError("参照ダイアログの表示待機がタイムアウトしました")
-            
-            # 2. Alt+Dでフォルダパスの欄をアクティブ化
-            self.logger.info("フォルダパスの欄をアクティブ化")
-            pyautogui.hotkey('alt', 'd')
-            time.sleep(2)
-            
-            # 3. download_folderのパスを貼り付け（絶対パスを取得）
-            download_folder_path = str(Path(self.config.download_folder).expanduser().resolve())
-            self.logger.info(f"フォルダパスを入力: {download_folder_path}")
-            pyperclip.copy(download_folder_path)
-        pyautogui.hotkey('ctrl', 'v')
-            time.sleep(2)
-            pyautogui.press('enter')
-            time.sleep(5)  # フォルダ内容の読み込み完了を待つ
-            
-            # 4. image11（ファイル名欄）の右側をクリック
-            self.logger.info("ファイル名欄にカーソルを表示")
-            if not self.wait_and_click_image('filename_field', timeout=30, click_position='right'):
-                raise AutomationError("ファイル名欄が見つかりません")
-            time.sleep(3)  # フィールドがアクティブになるまで待機
-            
-            # フィールドがアクティブになったことを確認するため、もう一度クリック
-            pyautogui.click()  # 同じ位置を再クリック
-            time.sleep(1)
-            
-            # 既存の内容をクリア
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.5)
-            
-            # 5. ファイル名を貼り付けてEnter
-            self.logger.info(f"ファイル名を入力: {attachment_filename}")
-            pyperclip.copy(attachment_filename)
-            time.sleep(0.5)  # クリップボードへのコピー完了待機
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(3)  # ペースト後の待機時間を増加
-            pyautogui.press('enter')
-            time.sleep(2)
-            
-            # メールフォーマット画面に戻るまで待機
-            self.logger.info("メールフォーマット画面の表示を待機中...")
-            if not self.wait_for_image('wait_image_6', timeout=30):
-                raise AutomationError("メールフォーマット画面の表示待機がタイムアウトしました")
-            
-            time.sleep(self.config.wait_time.get('email', 2))
-            
-            # メール送信
-            pyautogui.hotkey('ctrl', 'enter')
-            self.logger.info(f"メール送信完了: {recipient}")
-            
-            
-            # Excel内の特定要素が表示されるまで待機（メール送信後のExcel画面復帰確認）
-            self.logger.info("メール送信後のExcel画面を待機中...")
-            if not self.wait_for_image('wait_image_1', timeout=30):
-                self.logger.warning("Excelファイルの内容表示待機がタイムアウトしました（メール送信後）")
-
-            # ブラウザ画面に戻る処理
-            pyautogui.hotkey('alt', 'tab')
-            time.sleep(5)  # ブラウザへの切り替え完了を待つ
-            
-        except Exception as e:
-            raise AutomationError(f"メール送信エラー: {str(e)}")
-
-    def wait_for_excel(self, timeout: int = 30) -> bool:
-        """Excelファイルが開くのを待機"""
-        self.logger.info("Excelファイルの表示を待機中...")
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            try:
-                windows = pyautogui.getWindowsWithTitle("outlookmail_送付フォーマット.xlsx")
-                if windows:
-                    self.logger.info("Excelファイルの表示を確認")
-                    return True
-                time.sleep(1)
-            except Exception as e:
-                self.logger.debug(f"Excel待機中... {str(e)}")
-                time.sleep(1)
-        
-        return False
-
-    def get_latest_pdf(self) -> bool:
-        """PDFファイルが正常に保存されたか確認"""
-        try:
-            download_folder = Path(self.config.download_folder).expanduser().resolve()
-            pdf_files = list(download_folder.glob('*.pdf'))
-            if not pdf_files:
-                self.logger.error("PDFファイルが見つかりません")
-                return False
-            
-            latest_pdf = max(pdf_files, key=lambda f: f.stat().st_mtime)
-            file_time = latest_pdf.stat().st_mtime
-            current_time = time.time()
-            
-            # 最新のPDFファイルが5分以内に作成されていれば成功とみなす
-            if current_time - file_time < 300:
-                self.logger.info(f"PDFファイルが正常に保存されました: {latest_pdf}")
-                return True
-            
-            self.logger.warning("最近作成されたPDFファイルが見つかりません")
-            return False
-                
-        except Exception as e:
-            self.logger.error(f"PDF保存確認エラー: {str(e)}")
-            return False
-
-    def save_pdf_with_retry(self, retry_count=3, delay=5):
-        """PDFとして保存する処理（リトライあり）"""
-        self.logger.info("PDFとして保存を試行")
-        
-        for attempt in range(retry_count):
-            try:
-                # レジュメページが開くまで待機
-                time.sleep(5)
-                
-                # 右クリックする
-                self.logger.info("右クリックを実行")
-                pyautogui.click(button='right')
-                time.sleep(4)
-                
-                # 保存メニューの画像をクリック
-                self.logger.info("保存メニューをクリック")
-                if not self.wait_and_click_image('save', timeout=30):
-                    raise AutomationError("保存メニューが見つかりません")
-                self.logger.info("PDF保存ダイアログの表示を待機中...")
-                if not self.wait_for_image('wait_image_3', timeout=30):
-                    raise AutomationError("PDF保存ダイアログが表示されませんでした")
-                time.sleep(2)
-                
-                # Enterを押して保存実行
-                self.logger.info("Enterキーを押下")
-                pyautogui.press('enter')
-                time.sleep(5)  # 保存完了まで待機
-
-                # Adobe PDF画面閉じる
-                pyautogui.hotkey('ctrl', 'Q')
-                time.sleep(5)
-
-                # PDFが作成されたか確認
-                if self.get_latest_pdf():
-                    self.logger.info("PDF保存が成功")
-                    return True
-                
-                self.logger.warning(f"PDF保存失敗、リトライ {attempt+1}/{retry_count}")
-                time.sleep(delay)
-                
-            except Exception as e:
-                self.logger.error(f"PDF保存エラー: {str(e)}")
-                time.sleep(delay)
-        
-        self.logger.error("PDF保存が複数回失敗")
-        return False
-
-    def save_screenshot(self, filename: str = None) -> str:
-        """
-        現在の画面をスクリーンショットとして保存
-        Args:
-            filename: 保存するファイル名（指定しない場合はタイムスタンプ付き）
-        Returns:
-            str: 保存したスクリーンショットのパス
-        """
-        try:
-            # スクリーンショット保存先（PDFと同じフォルダに統一）
-            screenshot_dir = Path(self.config.download_folder).expanduser().resolve()
-            screenshot_dir.mkdir(parents=True, exist_ok=True)
-            
-            # スクリーンショットのファイル名
-            if filename:
-                screenshot_path = screenshot_dir / filename
+    def resolve_template_path(self) -> Path:
+        base_dir = Path(__file__).parent
+        candidate = Path(self.config.template_path)
+        if not candidate.is_absolute():
+            candidate = base_dir / candidate
+        if not candidate.exists():
+            fallback = base_dir / "outlookmail_送付フォーマット.xlsx"
+            if fallback.exists():
+                self.logger.warning(f"テンプレートファイルが見つからないため {fallback} を使用します")
+                candidate = fallback
             else:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                screenshot_path = screenshot_dir / f"screenshot_{timestamp}.png"
-            
-            # スクリーンショット取得と保存
-            screenshot = pyautogui.screenshot()
-            screenshot.save(str(screenshot_path))
-            
-            self.logger.info(f"スクリーンショット保存: {screenshot_path}")
-            return str(screenshot_path)
-            
-        except Exception as e:
-            self.logger.error(f"スクリーンショット保存エラー: {str(e)}")
-            raise AutomationError(f"スクリーンショット保存に失敗: {str(e)}")
+                raise AutomationError("メールテンプレートファイルが見つかりません")
+        return candidate
 
-    def get_latest_attachment(self) -> str:
-        """
-        最新の添付ファイル（PDF or スクリーンショット）を取得
-        Returns:
-            str: 添付するファイルのパス
-        """
+    def resolve_edge_binary(self) -> Optional[str]:
+        raw_path = (self.config.edge_path or "").replace("%s", "").strip()
+        if not raw_path:
+            return None
+        expanded = Path(raw_path).expanduser()
+        return str(expanded) if expanded.exists() else raw_path
+
+    def load_template_data(self) -> None:
+        path = self.resolve_template_path()
         try:
-            # PDFフォルダのパス（スクショもPDFフォルダに保存される）
-            pdf_folder = Path(self.config.download_folder).expanduser().resolve()
+            wb = load_workbook(path, data_only=True)
+        except Exception as exc:
+            raise AutomationError(f"テンプレートファイルの読み込みに失敗しました: {exc}")
 
-            latest_file = None
-            latest_time = 0
+        sheet_names = wb.sheetnames
+        if not sheet_names:
+            raise AutomationError("テンプレートファイルにシートが存在しません")
 
-            # PDFファイルとPNGファイルをチェック
-            if pdf_folder.exists():
-                # PDFファイルをチェック
-                pdf_files = list(pdf_folder.glob('*.pdf'))
-                if pdf_files:
-                    pdf_latest = max(pdf_files, key=lambda f: f.stat().st_mtime)
-                    latest_time = pdf_latest.stat().st_mtime
-                    latest_file = pdf_latest
+        contact_sheet_name = self.config.contact_sheet_name or sheet_names[0]
+        if contact_sheet_name not in sheet_names:
+            raise AutomationError(f"指定された連絡先シートが見つかりません: {contact_sheet_name}")
 
-                # PNGファイル（スクリーンショット）をチェック
-                png_files = list(pdf_folder.glob('*.png'))
-                if png_files:
-                    png_latest = max(png_files, key=lambda f: f.stat().st_mtime)
-                    if png_latest.stat().st_mtime > latest_time:
-                        latest_file = png_latest
-
-            if latest_file:
-                self.logger.info(f"添付ファイル: {latest_file}")
-                return str(latest_file)
-            else:
-                raise AutomationError("添付可能なファイルが見つかりません")
-
-        except Exception as e:
-            self.logger.error(f"添付ファイル取得エラー: {str(e)}")
-            raise AutomationError(f"添付ファイル取得に失敗: {str(e)}")
-
-    def get_latest_attachment_filename(self) -> str:
-        """
-        最新の添付ファイルのファイル名のみを取得（拡張子付き）
-        Returns:
-            str: ファイル名（例: "resume.pdf" or "山田太郎_東京オフィス.png"）
-        """
         try:
-            attachment_path = self.get_latest_attachment()
-            filename = Path(attachment_path).name
-            self.logger.info(f"添付ファイル名: {filename}")
-            return filename
-        except Exception as e:
-            self.logger.error(f"ファイル名取得エラー: {str(e)}")
-            raise AutomationError(f"ファイル名取得に失敗: {str(e)}")
+            contact_df = pd.read_excel(path, sheet_name=contact_sheet_name, engine="openpyxl")
+        except Exception as exc:
+            raise AutomationError(f"連絡先リストの読み込みに失敗しました: {exc}")
 
-    def confirm_csv_data(self, df_bx):
-        """B/E/I/AD/AK列の内容をダイアログで表示し、10秒後に自動でOK"""
-        preview = df_bx[['B', 'E', 'I', 'AD', 'AK']].head(5).to_string(index=False)
+        contact_df = contact_df.rename(
+            columns={
+                "拠点名": "branch",
+                "担当者": "person",
+                "To:": "to",
+                "Cc:": "cc",
+            }
+        )
+        contact_df["branch_norm"] = contact_df["branch"].apply(self.clean_branch_name)
+        self.contact_df = contact_df
+
+        body_sheet_name = self.config.body_sheet_name
+        if body_sheet_name and body_sheet_name not in sheet_names:
+            raise AutomationError(f"指定されたメール本文シートが見つかりません: {body_sheet_name}")
+
+        if body_sheet_name:
+            template_sheet = wb[body_sheet_name]
+        else:
+            sheets = wb.worksheets
+            template_sheet = sheets[1] if len(sheets) > 1 else sheets[0]
+
+        try:
+            self.mail_subject_template = (template_sheet["B1"].value or "").strip()
+            raw_body = template_sheet["B2"].value or ""
+            self.mail_body_template = str(raw_body).replace("%0a", "\n").strip()
+        except Exception as exc:
+            raise AutomationError(f"メール本文テンプレートの読み込みに失敗しました: {exc}")
+
+    def find_contact_by_branch(self, branch_name: str) -> Optional[pd.Series]:
+        if not hasattr(self, "contact_df"):
+            return None
+        target = self.clean_branch_name(branch_name)
+        if not target:
+            return None
+        df = self.contact_df
+        matches = df[df["branch_norm"] == target]
+        if matches.empty:
+            return None
+        return matches.iloc[0]
+
+    def build_attachments(self, stem: str, allow_png_only: bool = False) -> List[Path]:
+        folder = Path(self.config.download_folder).expanduser().resolve()
+        pdf_candidates = list(folder.glob(f"{stem}*.pdf"))
+        attachments: List[Path] = []
+        if pdf_candidates:
+            attachments.append(max(pdf_candidates, key=lambda p: p.stat().st_mtime))
+
+        png_candidates = list(folder.glob(f"{stem}*.png"))
+        if png_candidates:
+            attachments.append(max(png_candidates, key=lambda p: p.stat().st_mtime))
+
+        if not attachments:
+            if allow_png_only and not pdf_candidates and png_candidates:
+                return attachments
+            raise AutomationError(f"添付ファイルが見つかりません: {stem}")
+        return attachments
+
+    def confirm_csv_data(self, df: pd.DataFrame) -> bool:
+        preview = df[['B', 'E', 'I', 'AD', 'AK']].head(5).to_string(index=False)
         root = tk.Tk()
         root.withdraw()
-        
-        # 10秒後に自動的にEnterキーを押すスレッド
-        def auto_confirm():
-            time.sleep(10)
-            try:
-                pyautogui.press('enter')
-                self.logger.info("10秒経過：自動的にOKを押しました")
-            except Exception as e:
-                self.logger.error(f"自動確認エラー: {str(e)}")
-        
-        # 自動確認スレッドを開始
-        auto_thread = threading.Thread(target=auto_confirm, daemon=True)
-        auto_thread.start()
-        
+        root.attributes('-topmost', True)
+        root.lift()
+        root.focus_force()
         result = messagebox.askokcancel(
-            "CSVデータ確認（10秒後に自動続行）",
-            f"下記のデータで処理を開始します。\n\n{preview}\n\n※10秒後に自動的に続行します\nOK→続行 / キャンセル→中断"
+            "CSVデータ確認",
+            f"下記のデータで処理を開始します。\n\n{preview}\n\nOK→続行 / キャンセル→中断"
         )
         root.destroy()
         return result
 
-    def send_notification_email(self, recipient: str, subject: str, body: str) -> None:
-        """
-        処理完了通知メールを送信（Outlook COM経由）
-        Args:
-            recipient: 受信者のメールアドレス
-            subject: 件名
-            body: 本文
-        """
+    def search_and_open(self, full_name: str) -> Optional[str]:
+        if not self.browser_wait or not self.driver:
+            raise AutomationError("WebDriverが初期化されていません")
+        self.logger.info(f"応募者を検索します: {full_name}")
+        search_box = self.browser_wait.until(EC.presence_of_element_located((By.NAME, "searchWord")))
+        search_box.clear()
+        search_box.send_keys(full_name)
+        time.sleep(2)
+        self.click_search()
+        rows = self.browser_wait.until(EC.presence_of_all_elements_located((By.XPATH, "//td[contains(@class, 'styles_tdSelectionStatus')]")))
+        if not rows:
+            raise AutomationError("検索結果が見つかりません")
+        self.logger.info("対応状況セルを開いて詳細画面へ遷移します")
+        time.sleep(2)
         try:
-            import win32com.client
-            
-            self.logger.info(f"通知メールを送信します: {recipient}")
-            
-            # Outlookアプリケーションを起動
-            outlook = win32com.client.Dispatch("Outlook.Application")
-            
-            # 新規メールアイテムを作成（0はolMailItem定数）
-            mail_item = outlook.CreateItem(0)
-            
-            # メール情報を設定
-            mail_item.To = recipient.strip()
-            mail_item.Subject = subject
-            mail_item.Body = body
-            
-            # メールを送信
-            mail_item.Send()
-            
-            self.logger.info(f"通知メール送信完了: {recipient}")
-            
-        except Exception as e:
-            raise AutomationError(f"通知メール送信エラー: {str(e)}")
+            first_row = self.browser_wait.until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "table tbody tr:first-child"))
+            )
+            first_row.click()
+            self.logger.info("最初の行全体をクリックしました")
+            time.sleep(2)
+        except Exception:
+            time.sleep(2)
+            self.logger.warning("行全体のクリックに失敗したため、セルを再試行します")
+            time.sleep(2)
+            first_cell = self.browser_wait.until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "table tbody tr:first-child td:first-child"))
+            )
+            first_cell.click()
+            self.logger.info("セルをクリックして詳細を開きました")
+        try:
+            resume_button = self.browser_wait.until(
+                EC.presence_of_element_located((By.XPATH, "//a[@data-la='entry_detail_resume_btn_click']"))
+            )
+            pdf_url = resume_button.get_attribute("href")
+            if not pdf_url:
+                raise AutomationError("レジュメのPDF URLを取得できませんでした")
+            time.sleep(2)
+            self.logger.info(f"レジュメPDFのURL: {pdf_url[:80]}...")
+            time.sleep(2)
+            return pdf_url
+        except Exception as exc:
+            self.logger.warning(f"レジュメボタンが見つからないためスクリーンショットに切り替えます: {exc}")
+            time.sleep(2)
+            return None
 
-    def send_completion_notifications(self) -> None:
-        """
-        全処理完了後に通知先リストから通知メールを送信（Outlook COM経由）
-        """
+    def download_pdf_from_url(self, pdf_url: str, file_name: str) -> Path:
+        if not self.driver:
+            raise AutomationError("WebDriverが未初期化です")
+        download_folder = Path(self.config.download_folder).expanduser().resolve()
+        download_folder.mkdir(parents=True, exist_ok=True)
+        safe_stem = "".join(c for c in file_name if c.isalnum() or c in ("_", "-", " ")).strip() or "resume"
+        target_name = f"{safe_stem}.pdf"
+        self.logger.info(f"PDFダウンロードを開始します url={pdf_url[:80]}...")
+        origin_handle = None
+        new_window_created = False
         try:
-            import win32com.client
-            
-            self.logger.info("処理完了通知を送信します")
-            
-            # Excelファイルのパス
-            excel_path = Path(__file__).parent / "outlookmail_送付フォーマット.xlsx"
-            
-            # Excelファイルを読み込み（シート名：処理完了の通知先）
-            df = pd.read_excel(excel_path, sheet_name='処理完了の通知先', header=0)
-            
-            self.logger.info("通知先リストを読み込みました")
-            self.logger.info(f"列名: {df.columns.tolist()}")
-            
-            # 件名を取得（E1セル = ヘッダー行のE列 = 列名から取得）
-            subject = ""
-            if len(df.columns) > 4:
-                subject = str(df.columns[4]) if pd.notna(df.columns[4]) else ""
-            self.logger.info(f"件名: {subject}")
-            
-            # B列の最終行を求める（NaNでない最後の行）
-            # A列=氏名、B列=アドレス、E列=本文
-            df_filtered = df[df.iloc[:, 1].notna()]  # B列（インデックス1）がNaNでない行
-            
-            if df_filtered.empty:
-                self.logger.warning("通知先リストが空です")
-                return
-            
-            self.logger.info(f"通知先件数: {len(df_filtered)}")
-            
-            # Outlookアプリケーションを起動
-            self.logger.info("Outlookアプリケーションを起動しています...")
-            outlook = win32com.client.Dispatch("Outlook.Application")
-            
-            # 各通知先にメールを送信
-            for i, row in df_filtered.iterrows():
-                try:
-                    name = row.iloc[0]  # A列：氏名
-                    recipient = row.iloc[1]  # B列：アドレス
-                    body = row.iloc[4]  # E列：本文
-                    
-                    # 空の宛先はスキップ
-                    if not recipient or str(recipient).strip() == "" or pd.isna(recipient):
-                        self.logger.info(f"行 {i + 1}: 宛先が空のためスキップしました")
-                        continue
-                    
-                    self.logger.info(f"通知メール送信: {name} ({recipient})")
-                    
-                    # 新規メールアイテムを作成（0はolMailItem定数）
-                    mail_item = outlook.CreateItem(0)
-                    
-                    # メール情報を設定
-                    mail_item.To = str(recipient).strip()
-                    mail_item.Subject = subject  # 全メール共通の件名（E1セルから取得）
-                    mail_item.Body = str(body) if pd.notna(body) else ""
-                    
-                    # メールを送信
-                    mail_item.Send()
-                    
-                    self.logger.info(f"メール送信完了: {recipient}")
-                    
-                except Exception as e:
-                    self.logger.error(f"通知メール送信エラー（{i+1}行目）: {str(e)}")
-                    continue
-            
-            self.logger.info("全通知メールの送信が完了しました")
-            
-        except Exception as e:
-            self.logger.error(f"処理完了通知エラー: {str(e)}")
-            raise AutomationError(f"処理完了通知に失敗: {str(e)}")
+            origin_handle = self.driver.current_window_handle
+        except Exception as exc:
+            self.logger.debug(f"現在のウィンドウ取得に失敗しました: {exc}")
+        try:
+            self.driver.switch_to.new_window("tab")
+            new_window_created = True
+            self.logger.debug("PDFダウンロード用の新規タブを開きました")
+        except Exception as exc:
+            self.logger.warning(f"新規タブの作成に失敗したため既存タブを使用します: {exc}")
+        try:
+            self.driver.get(pdf_url)
+        except Exception as exc:
+            self.logger.warning(f"PDFビューア表示に失敗しましたがダウンロードは継続します: {exc}")
 
-    def run(self):
-        """メイン処理"""
+        headers = {}
         try:
-            self.logger.info("処理開始")
-            
-            # ブラウザ起動
-            self.logger.info("ブラウザを起動中...")
+            ua = self.driver.execute_script("return navigator.userAgent;")
+            headers["User-Agent"] = ua
+        except Exception:
+            pass
+        try:
+            cookies = {c["name"]: c["value"] for c in self.driver.get_cookies()}
+        except Exception as exc:
+            self.logger.warning(f"クッキー取得に失敗しました: {exc}")
+            cookies = {}
+
+        target_path = download_folder / target_name
+        try:
+            with requests.get(pdf_url, headers=headers, cookies=cookies, stream=True, timeout=60) as resp:
+                resp.raise_for_status()
+                with open(target_path, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+            self.logger.info(f"PDFを保存しました: {target_path}")
+        except Exception as exc:
+            raise AutomationError(f"PDFダウンロードに失敗しました: {exc}")
+
+        if new_window_created:
             try:
-                # マウスを画面中央に移動
-                screen_width, screen_height = pyautogui.size()
-                pyautogui.moveTo(screen_width // 2, screen_height // 2)
-                
-                edge_exe = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-                os.startfile(edge_exe)
-                time.sleep(7)  # ブラウザ起動待機
-                
-                # URLを入力（Ctrl+Lでアドレスバーにフォーカス）
-                pyautogui.hotkey('ctrl', 'l')
-                time.sleep(3)
-                pyperclip.copy(self.config.url)
-                pyautogui.hotkey('ctrl', 'v')
-                pyautogui.press('enter')
-                
-            except Exception as e:
-                self.logger.error(f"ブラウザ起動エラー: {str(e)}")
-                raise AutomationError("ブラウザの起動に失敗しました")
-                
-            # ページ読み込みのための待機
-            self.logger.info("ページの読み込みを待機中...")
-            time.sleep(6)
-            
-            # ログイン処理
-            self.logger.info("ログイン画面の要素を探索中...")
-            self.click_image('login', use_grayscale=False)
-            time.sleep(4)
+                self.driver.close()
+                self.logger.debug("PDFタブを閉じました")
+            except Exception as exc:
+                self.logger.warning(f"PDFタブのクローズに失敗しました: {exc}")
+            if origin_handle:
+                try:
+                    self.driver.switch_to.window(origin_handle)
+                    self.logger.debug("元のタブへ戻りました")
+                except Exception as exc:
+                    self.logger.warning(f"元のタブへ戻れませんでした: {exc}")
+        else:
+            try:
+                self.driver.back()
+                time.sleep(1)
+            except Exception as exc:
+                self.logger.warning(f"前の画面への戻りに失敗しました: {exc}")
+        return target_path
 
-            # ログイン情報入力
-            self.logger.info("ログイン情報入力フィールドを探します...")
-            if self.wait_and_click_image('login_half', timeout=20, click_position='top'):
-                pyperclip.copy(self.config.login_info['username'])
-                pyautogui.hotkey('ctrl', 'v')
+    def capture_screenshot(self, stem: str) -> Path:
+        folder = Path(self.config.download_folder).expanduser().resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        safe_stem = "".join(c for c in stem if c.isalnum() or c in ("_", "-", " ")).strip() or "screenshot"
+        target_path = folder / f"{safe_stem}.png"
+        img = pyautogui.screenshot()
+        img.save(str(target_path))
+        self.logger.info(f"スクリーンショットを保存しました: {target_path}")
+        return target_path
 
-                pyautogui.press('tab')  # パスワードフィールドへ移動
-                pyperclip.copy(self.config.login_info['password'])
-                pyautogui.hotkey('ctrl', 'v')
+    def send_email(self, contact: pd.Series, attachments: List[Path], applicant_email: str = "") -> None:
+        if win32com is None:
+            raise AutomationError("win32com がインポートできません")
 
-                # タブを2回押してエンターでログイン
-                pyautogui.press('tab')
-                pyautogui.press('tab')
-                pyautogui.press('enter')
+        # To/CC/担当者の値を NaN や空白に対応しつつ安全に取得
+        to_raw = contact.get("to", "")
+        cc_raw = contact.get("cc", "")
+        person_raw = contact.get("person", "")
 
-                # ログイン処理の待機
-                self.logger.info("ログイン処理の待機中...")
-                time.sleep(5)
-            else:
-                self.logger.info("ログイン入力画面が表示されなかったため、ホーム画面へ遷移済みと判断し処理を継続します")
-                time.sleep(2)
-            
-            # 画像2から5までを順番にクリック
-            images_to_click = [
-                'image3',
-                'image4',
-                'image5',
-                ('search_box', 'right'),
-                'download',
-            ]
-            for item in images_to_click:
-                if isinstance(item, tuple):
-                    image_name, position = item
-                else:
-                    image_name, position = item, 'center'
-                if not self.wait_and_click_image(image_name, click_position=position):
-                    raise AutomationError(f"{image_name}のクリックに失敗しました")
+        to_addr = ""
+        if pd.notna(to_raw):
+            to_addr = str(to_raw).strip()
 
-            time.sleep(7)  # ダウンロード待機
+        cc_addr = ""
+        if pd.notna(cc_raw):
+            cc_addr = str(cc_raw).strip()
 
-            # CSVファイル処理
-            self.logger.info("CSVファイルを処理中...")
+        person = ""
+        if pd.notna(person_raw):
+            person = str(person_raw).strip()
+
+        subject = (getattr(self, "mail_subject_template", "") or "").strip()
+        body_template = getattr(self, "mail_body_template", "") or ""
+        greeting = f"{person} さん" if person else ""
+
+        body_parts: List[str] = []
+        if greeting:
+            body_parts.append(greeting)
+        if applicant_email:
+            body_parts.append(f"応募者メール: {applicant_email}")
+        if body_template:
+            body_parts.append(body_template)
+        body = "\n\n".join(body_parts) if body_parts else body_template
+
+        self.logger.info(f"メールを生成します To={to_addr} Cc={cc_addr} 件名={subject}")
+        mail = win32com.client.Dispatch("Outlook.Application").CreateItem(0)
+        mail.To = to_addr
+        if cc_addr:
+            mail.CC = cc_addr
+        mail.Subject = subject
+        mail.Body = body
+        for attachment in attachments:
+            mail.Attachments.Add(str(attachment))
+        mail.Send()
+        self.logger.info("メール送信が完了しました")
+
+    def close_overlay(self) -> None:
+        if not self.browser_wait:
+            return
+        try:
+            btn = self.browser_wait.until(EC.element_to_be_clickable((By.XPATH, "//img[@data-la='overlay_entry_detail_close_btn_click']")))
+            btn.click()
+            time.sleep(1)
+        except Exception:
+            pass
+
+    def update_application_status(self, status_value: str = "04") -> None:
+        if not self.browser_wait:
+            return
+        try:
+            select_elem = self.browser_wait.until(
+                EC.element_to_be_clickable((By.XPATH, "(//select[@data-select='selectBoxTable'])[1]"))
+            )
+            Select(select_elem).select_by_value(status_value)
+            time.sleep(self.config.wait_time.get('click', 2))
+            self.logger.info(f"ステータスを {status_value} に更新しました")
+        except Exception as exc:
+            self.logger.warning(f"ステータス更新に失敗しました: {exc}")
+
+    def show_dialog(self, message: str, is_error: bool = False) -> None:
+        root = tk.Tk()
+        root.withdraw()
+        if is_error:
+            messagebox.showerror("エラー", message)
+        else:
+            messagebox.showinfo("通知", message)
+        root.destroy()
+
+    def cleanup(self, close_browser: bool = True) -> None:
+        self.running = False
+        if close_browser and self.driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+
+    def run(self) -> None:
+        success = False
+        try:
+            self.driver = self.start_webdriver()
+            self.browser_wait = WebDriverWait(self.driver, self.config.wait_time.get('browser', 6) + 10)
+            self.driver.get(self.config.url)
+            self.login()
+            self.navigate_entries()
+            self.filter_entries()
+            self.download_entries()
             csv_path = self.get_latest_csv()
-            df_bx = self.process_data(csv_path)
-
-            # 追加：CSV内容の確認ダイアログ
-            if not self.confirm_csv_data(df_bx):
-                self.logger.info("ユーザーが処理を中断しました")
-                self.show_dialog("処理を中断しました", is_error=True)
+            df = self.process_data(csv_path)
+            if not self.confirm_csv_data(df):
+                self.show_dialog("CSV確認で中断しました", is_error=True)
                 return
-
-            # CSVファイル処理直後にExcelファイルを開く
-            self.logger.info("Excelファイルを開きます...")
-            try:
-                excel_path = Path(__file__).parent / "outlookmail_送付フォーマット.xlsx"
-                os.startfile(str(excel_path))
-                
-                # Excelファイルの表示を待機
-                if not self.wait_for_excel(timeout=30):
-                    raise AutomationError("Excelファイルの表示待機がタイムアウトしました")
-                time.sleep(2)  # 安定化のための追加待機
-                
-                # Excelウィンドウをアクティブ化（画像認識のため前面に表示）
-                self.logger.info("Excelウィンドウをアクティブ化します")
-                excel_window = pyautogui.getWindowsWithTitle("outlookmail_送付フォーマット.xlsx")[0]
-                excel_window.activate()
-                  # アクティブ化待機
-                
-                # Excel内の特定要素が表示されるまで待機
-                self.logger.info("Excel内の要素表示を待機中...")
-                if not self.wait_for_image('wait_image_1', timeout=30):
-                    raise AutomationError("Excelファイルの内容表示待機がタイムアウトしました")
-                
-                time.sleep(2)
-                self.logger.info("ブラウザ画面に切り替えます")
-                pyautogui.hotkey('alt', 'tab')  # ブラウザ画面に戻る
-
-            except Exception as e:
-                raise AutomationError(f"Excelファイルを開けません: {str(e)}")
-
-            # メインループ処理の修正
-            for i, row in df_bx.iterrows():
-                self.wait_if_paused()  # 一時停止チェック
+            self.load_template_data()
+            for _, row in df.iterrows():
+                overlay_closed = False
                 try:
-                    self.logger.info(f"行の処理開始: {i + 1}")
-                    age = int(row['E'])  # 年齢を取得
-                    
-                    # 55歳以上の場合は早期にスキップ（54歳以下が対象）
-                    if age >= 55:
-                        self.logger.info(f"55歳以上のためスキップ: {age}歳")
+                    if int(row["E"]) >= 55:
+                        self.logger.info("55歳以上のためスキップ")
                         continue
-                    
-                    time.sleep(3)  # 画面切り替え待ち
-
-                    # 1. 検索処理を実行
-                    self.find_and_click_text(row['B'])
-                    
-                    # メインループ処理内の該当部分を修正
-                    resume_opened = False
-                    try:
-                        # 履歴書を開くボタンのクリックを試行
-                        resume_button_clicked = self.wait_and_click_image('resume_open', timeout=30)
-                        if not resume_button_clicked:
-                            self.logger.warning("履歴書を開くボタンが見つかりません。スクリーンショットを取得します")
-                            
-                            # 1. スクリーンショットを取得する
-                            # 2. スクリーンショットのファイル名をB列_AD列の形式にする
-                            screenshot_filename = f"{row['B']}_{row['AD']}.png"
-                            
-                            # スクリーンショット取得と保存（PDFフォルダに保存）
-                            self.save_screenshot(filename=screenshot_filename)
-                            
-                            # 3. スクリーンショットを添付してメール送信
-                            self.logger.info("スクリーンショットを添付してメールを送信します")
-                            self.send_email(row['AD'], row['AD'], row['AK'], row['I'])
-                            
-                        else:
-                            resume_opened = True
-                            self.logger.info("履歴書オープン後の画面を待機中...")
-                            # wait_image_2の待機をコメントアウト（タブ名が変わることがあるため）
-                            # if not self.wait_for_image('wait_image_2', timeout=30):
-                            #     raise AutomationError("履歴書画面の表示待機がタイムアウトしました")
-                            time.sleep(7)  # 画面安定待機（画像待機の代わりに固定時間待機）
-                            
-                            # PDF保存処理
-                            if not self.save_pdf_with_retry():
-                                self.logger.warning("PDF保存に問題があったため、スクリーンショットを取得します")
-                                self.save_screenshot()
-                                
-                            # メール送信処理（PDFの場合はアドレス不要）
-                            self.send_email(row['AD'], row['AD'], row['AK'])
-                        
-                    except Exception as e:
-                        self.logger.error(f"行{i + 1}の処理でエラー: {str(e)}")
-                        # エラー発生時はスクリーンショットを取得
+                    pdf_url = self.search_and_open(row["B"])
+                    time.sleep(2)
+                    record_stem = self.build_record_file_stem(row)
+                    attachments: List[Path] = []
+                    pdf_downloaded = False
+                    if pdf_url:
                         try:
-                            self.save_screenshot()
-                        except Exception as screenshot_error:
-                            self.logger.error(f"スクリーンショット取得エラー: {str(screenshot_error)}")
+                            self.download_pdf_from_url(pdf_url, record_stem)
+                            pdf_downloaded = True
+                        except Exception as exc:
+                            self.logger.warning(f"PDFダウンロードに失敗しました: {exc}")
+                    if not pdf_downloaded:
+                        try:
+                            screenshot_path = self.capture_screenshot(record_stem)
+                            attachments.append(screenshot_path)
+                        except Exception as exc:
+                            self.logger.warning(f"スクリーンショット取得に失敗しました: {exc}")
+                    time.sleep(2)
+                    contact = self.find_contact_by_branch(row["AD"])
+                    if contact is None:
+                        self.logger.warning(f"支店名に一致する送信先が見つかりません: {row['AD']}")
                         continue
-
-                    # 5. レジュメページを閉じる（Ctrl+W）
-                    if resume_opened:
-                        self.logger.info("レジュメページを閉じます")
-                        pyautogui.hotkey('ctrl', 'w')
-                        time.sleep(2)
-                    else:
-                        self.logger.info("レジュメページが開かれていないためCtrl+Wをスキップします")
-                        self.logger.info("詳細ページは既に閉じられているためresume_closeの待機をします")
-                    
-                    # 6. 詳細ページを閉じる(resume_close)
-                    if not self.wait_and_click_image('resume_close', timeout=30):
-                        self.logger.warning("詳細ページの閉じるボタンが見つかりませんでした")
-                    else:
-                        self.logger.info("詳細ページを閉じました")
-                    time.sleep(2)
-                    
-                    # 問題点2の修正: image10とimage11を順番にクリック
-                    self.logger.info("not_supported画像を確認")
-                    if not self.wait_and_click_image('not_supported', timeout=30):
-                        self.logger.warning("not_supported画像が見つかりません。スクリーンショットを取得します")
-                        self.save_screenshot()
-                    
-                    time.sleep(2)
-                    
-                    self.logger.info("image11(iab)をクリック")
-                    if not self.wait_and_click_image('iab', timeout=30):
-                        self.logger.warning("image11が見つかりませんでした")
-                    time.sleep(2)
-                    
-                    self.logger.info(f"行の処理完了: {i + 1}")
-                
-                except Exception as e:
-                    self.logger.error(f"行{i + 1}の処理でエラー: {str(e)}")
-                    # エラーが発生しても次の行の処理へ進む
-                    continue
-
-            self.logger.info("全処理完了")
-            
-            # 検索欄をクリアして未対応フラグを表示
-            try:
-                self.logger.info("検索欄をクリアします")
-                # 1. image6の左側をクリック
-                if self.wait_and_click_image('search_box', timeout=10, click_position='left'):
-                    time.sleep(1)
-                    # 2. Ctrl+Aで全選択
-                    pyautogui.hotkey('ctrl', 'a')
-                    time.sleep(1)
-                    # 3. deleteで削除
-                    pyautogui.press('delete')
-                    time.sleep(1)
-                    # 4. image6の右側をクリック（未対応フラグを表示）
-                    if self.wait_and_click_image('search_box', timeout=10, click_position='right'):
-                        self.logger.info("検索欄をクリアし、未対応フラグを表示しました")
-                        time.sleep(2)  # 画面表示の安定化待機
-                    else:
-                        self.logger.warning("検索ボックスの右側クリックに失敗しました")
-                else:
-                    self.logger.warning("検索ボックスが見つかりませんでした")
-            except Exception as e:
-                self.logger.warning(f"検索欄のクリア処理でエラー: {str(e)}")
-                # エラーが発生しても処理は続行
-            
-            # 全処理完了後に通知メールを送信
-            try:
-                self.logger.info("処理完了通知を送信します")
-                self.send_completion_notifications()
-            except Exception as e:
-                self.logger.error(f"処理完了通知の送信に失敗しました: {str(e)}")
-                # 通知メール送信失敗は致命的ではないため、処理は続行
-            
-        except Exception as e:
-            self.logger.error(f"致命的なエラー: {str(e)}")
-            raise
-        
-        finally:
-            # 全ての処理が完了してからクリーンアップを実行
-            self.cleanup()
-
-    def cleanup(self):
-        """クリーンアップ処理"""
-        try:
-            self.running = False  # ESCキー監視スレッドを停止
-            # まず開いているウィンドウを閉じる
-            for window_title in ["latest_csv_file", "outlookmail_送付フォーマット.xlsx"]:
-                try:
-                    window = pyautogui.getWindowsWithTitle(window_title)[0]
-                    window.close()
-                except Exception as e:
-                    self.logger.warning(f"ウィンドウが閉じられません: {window_title}")
-            
-            # 一時ファイルの削除前に十分な待機時間を設定
-            time.sleep(3)
-            
-            # デバッグ画像の削除
-            debug_folder = Path(__file__).parent / "logs" / "debug_full_image"
-            if debug_folder.exists():
-                for file in debug_folder.glob("*.png"):
                     try:
-                        file.unlink()
-                    except Exception:
-                        pass
-        
-            self.logger.info("クリーンアップ完了")
-            
-        except Exception as e:
-            self.logger.error(f"クリーンアップエラー: {str(e)}")
+                        if pdf_downloaded:
+                            attachments = self.build_attachments(record_stem, allow_png_only=True)
+                        elif not attachments:
+                            attachments = self.build_attachments(record_stem, allow_png_only=True)
+                    except Exception as exc:
+                        self.logger.warning(f"添付ファイルが見つかりません: {exc}")
+                        continue
+                    applicant_email = str(row.get("I", "")).strip()
+                    if pdf_downloaded:
+                        # PDF取得できた場合 → 応募者アドレスは本文に載せない
+                        self.send_email(contact, attachments, applicant_email="")
+                    else:
+                        # スクショのみの場合 → 応募者アドレスを本文に記載
+                        self.send_email(contact, attachments, applicant_email=applicant_email)
+                    time.sleep(2)
+                    self.close_overlay()
+                    overlay_closed = True
+                    self.update_application_status("04")
+                    time.sleep(2)
+                finally:
+                    if not overlay_closed:
+                        self.close_overlay()
+                time.sleep(2)
+            success = True
+        except Exception as exc:
+            self.logger.error("処理中に致命的なエラーが発生しました")
+            self.logger.exception(exc)
+            raise
+        finally:
+            if success:
+                # 正常終了時はブラウザを開いたままにする
+                self.cleanup(close_browser=False)
+            else:
+                # 例外時や強制終了時はブラウザも閉じる
+                self.cleanup(close_browser=True)
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print("パスワードが必要です")
+        sys.exit(1)
+
+    password = sys.argv[1]
+
+    if len(sys.argv) > 2 and sys.argv[2] == "--verify":
+        if not check_password(password):
+            print("パスワードが違います")
+            sys.exit(1)
+        sys.exit(0)
+
+    if not check_password(password):
+        print("パスワードが違います")
+        sys.exit(1)
+
+    config_path = Path(__file__).parent / "config.yaml"
+    automation = AutomationScript(str(config_path))
+    try:
+        automation.run()
+    except Exception as exc:
+        automation.logger.error("全体処理で致命的なエラーが発生しました")
+        automation.logger.exception(exc)
+        raise
 
 
 if __name__ == "__main__":
-    automation = None  # 例外時の参照対策
-    try:
-        from pathlib import Path
-        script_dir = Path(__file__).parent
-        # スクリプトと同じディレクトリに config.yaml がある場合
-        config_path = str(script_dir / "config.yaml")
-        automation = AutomationScript(config_path)
-        automation.logger.info("プログラムを開始します")
-        
-        # メイン処理の実行
-        automation.run()
-
-        # 正常終了時のダイアログ
-        automation.show_dialog("処理が完了しました")
-                
-    except pyautogui.FailSafeException:
-        print("\nマウスが画面の四隅にありますので、実行できません")
-        print("マウスを中央付近に移動してから、再度実行してください。")
-        if automation and automation.logger:
-            automation.logger.error("FailSafeException: マウスが画面の四隅にあります")
-        sys.exit(1)
-    except Exception as e:
-        if automation and automation.logger:
-            automation.logger.error(f"エラーが発生しました: {str(e)}")
-            # エラー時のダイアログ
-            automation.show_dialog("エラーが起きたので中断されました", is_error=True)
-        else:
-            print(f"エラーが発生しました: {str(e)}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        input("Enterキーを押して終了")
+    main()

@@ -7,25 +7,25 @@
 - 英語で説明する必要がある場合でも、日本語の補足を必ず付けること。
 
 ## 【方針・原則】
-- 指示は、チャット上とは別に、"airwork-project\ToDo"フォルダに納められた"prompt"ファイルを渡す場合もあります。
+- 指示は、チャット上とは別に、"\ToDo"フォルダに納められた"prompt"ファイルを渡す場合もあります。
 - ユーザーからの明確な指示がない限り、推測で行動してはならない。
 - 操作の曖昧な箇所がある場合、何もせずにユーザーに確認を求めること。
 - 確認を求める場合は、ユーザーが理解しやすい選択しも出すこと。
 - ユーザーが選択肢から選んだ方針に忠実に行動すること。
-- エラーが起きた際は、(ログ("airwork-project\program\logs")や、参考資料("airwork-project\Research materials")をもとに)原因を突き止めて説明し、修正方法を提示すること。
-- ユーザーからファイル書き換えの指示を受けた時は、"airwork-project\Research materials"に納められた以下のファイルを参照(または模倣)してください。_
+- エラーが起きた際は、(ログ("program\logs")や、参考資料("\Research materials")をもとに)原因を突き止めて説明し、修正方法を提示すること。
+- ユーザーからファイル書き換えの指示を受けた時は、"\Research materials"に納められた以下のファイルを参照(または模倣)してください。_
 また、同ディレクトリに納められている他の資料ファイルも必要に応じて参考にすること。
 ### 対象ファイル
-- airwork-project\Research materials\bak-new_automation.py (当ファイルを「バックアップファイル」という名前で指す)
-- airwork-project\Research materials\airwork_selenium_sample.py (当ファイルを「サンプルファイル」という名前で指す)
+- Research materials\bak-new_automation.py (当ファイルを「バックアップファイル」という名前で指す)
+- Research materials\airwork_selenium_sample.py (当ファイルを「サンプルファイル」という名前で指す)
 
 
 ## 【許可される操作】
 1. 当プロジェクトで基本的にAIにスクリプトの編集をさせるのは以下のファイルのみ。
 ### 対象ファイル
-- airwork-project\program\new_automation.py (当ファイルを「メインファイル」という名前で指す)
-- airwork-project\program\config.yaml (当ファイルを「config」という名前で指す)
-- airwork-project\program\requirements.txt (当ファイルを「requirements」という名前で指す)
+- program\new_automation.py (当ファイルを「メインファイル」という名前で指す)
+- program\config.yaml (当ファイルを「config」という名前で指す)
+- program\requirements.txt (当ファイルを「requirements」という名前で指す)
 2. ただし、ユーザーが直接明示してファイル編集の許可をした場合は、その限りではない。
 3. 明示的な指示がある場合に限り、新しい関数の追加やコード整理を行ってよい。
 4. コメントやドキュメントの追加など、挙動に影響を与えず、ただコードの可読性向上させる場合は許可する。
@@ -56,7 +56,7 @@
 
 
 ## 【特記事項】
-- このプロジェクトは Windows、Python、Selenium、PyAutoGUI を使用している。  
+- このプロジェクトは Windows、Python、Selenium、を使用している。  
   これらの動作に関わるパス、ウィンドウ操作、画像座標などはユーザーが明示した場合のみ変更してよい。
 - Excelテンプレート（outlookmail_送付フォーマット.xlsx）は構造（列名）を変更してはならない。
 
