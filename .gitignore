@@ -35,9 +35,10 @@ env/
 # ログファイル
 program/logs/*.log
 *.log
+/＊Airwork自動操作_配布用/program/logs/*.log
 
 # 機密情報（重要！）
-program/config.enc
+/＊Airwork自動操作_配布用/program/config.enc
 
 # 一時ファイル
 *.tmp
@@ -72,9 +73,9 @@ $RECYCLE.BIN/
 
 
 # Documentation & Agent files
-当プログラムの案内.docx
-Agent.md
+/当プログラムの案内.docx
+/Agent.md
 
 # Development & Research folders
-ToDo/
-Research materials/
+/ToDo/
+/Research materials/

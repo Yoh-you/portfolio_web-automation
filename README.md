@@ -22,7 +22,7 @@
 - **メールクライアント**: Microsoft Outlook（Excel連携機能使用）
 
 ### 前提条件
-- `program/secrets.yaml` に AirワークのURLとログイン情報が設定されていること
+- `program/config.yaml` に AirワークのURLとログイン情報が設定されていること
 - `~/Downloads/pdf` フォルダが存在すること
 - Edgeのダウンロード先が `~/Downloads/pdf` に設定されていること
 - `outlookmail_送付フォーマット.xlsx` ファイルが正しく配置されていること
@@ -77,11 +77,9 @@ C:\Users\[ユーザー名]\Downloads\pdf
 ### ⚠️ 重要な注意事項
 
 #### 実行前の確認
-- [ ] `program/secrets.yaml` に正しいURLとログイン情報を入力したか？
-- [ ] `Downloads/pdf` フォルダは空になっているか？
+- [ ] `program/config.yaml` に正しいURLとログイン情報を入力したか？
 - [ ] Edgeのダウンロード設定は正しいか？
 - [ ] Outlookは起動しているか？
-- [ ] 他のウィンドウは閉じているか？
 
 #### 実行中の注意
 - **マウスを画面の四隅に置かないこと** - エラーの原因になります
@@ -102,7 +100,7 @@ airwork-project/
 │
 ├── 処理開始_escキーで停止可能.bat    # 実行用バッチファイル
 ├── config暗号化ツール.bat           # 設定ファイル暗号化ツール
-├── 当プログラムの説明と事前準備の案内.docx
+├── 当プログラムの案内.docx
 ├── 当自動操作の説明.mp4
 ├── README.md                        # このファイル
 ├── CONFIG暗号化の手順.md            # 暗号化の詳細手順
@@ -110,23 +108,21 @@ airwork-project/
 └── program/                         # プログラム本体
     ├── new_automation.py            # メインスクリプト
     ├── encrypt_config.py            # 設定ファイル暗号化スクリプト
-    ├── config.yaml                  # 一般設定（非機密）
-    ├── secrets.yaml                 # AirワークURL・ログイン情報（テンプレ）
-    ├── config.enc                   # 設定ファイル（暗号化版）
+    ├── config.yaml                  # 設定ファイル（URL/ID/PASSを設定）
     ├── requirements.txt             # 必要なパッケージ一覧
     ├── outlookmail_送付フォーマット.xlsx  # メールテンプレート
     │
-
-    │
     └── logs/                        # 実行ログ（自動生成）
-        └── automation_YYYYMMDD_HHMMSS.log
+         └── automation_YYYYMMDD_HHMMSS.log
+│
+└──＊Airwork自動操作_配布用
 ```
 
-**注意**: メンバーに共有する際は、`config.yaml` の代わりに `config.enc`（暗号化版）を共有してください。`secrets.yaml` はテンプレ状態でリポジトリに含まれていますが、実際のID/パスワードを書き込んだら共有前に必ず空のテンプレに戻してください。
+**注意**: `program/config.enc`（暗号化設定ファイル）はリポジトリには含まれません。管理者が必要に応じて作成し、配布用パッケージに含めるものです。
 
-## ⚙️ 設定ファイル（config.yaml / secrets.yaml）
+## ⚙️ 設定ファイル（config.yaml）
 
-`config.yaml` にはブラウザ/フォルダ/画像設定などの非機密情報だけを記載し、AirワークのURL・ログイン情報などの機密値は `secrets.yaml` に分離しました。`config.yaml` からは `secrets_file` で参照します。
+`config.yaml` に、AirワークのURLやログインID・パスワードを設定します。
 
 ```yaml
 # ブラウザパス
@@ -135,29 +131,19 @@ edge_path: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe %s'
 # ダウンロードフォルダ
 download_folder: '~/Downloads/pdf'
 
-# 機密情報ファイル
-secrets_file: 'secrets.yaml'
-```
-
-`program/secrets.yaml` はリポジトリにテンプレとして含まれているため、実際に運用するPCでは必ず以下のように書き換えてください（値は例です）。
-
-```yaml
-# ここに表示させたいページのURLを設定
+# Airワーク設定
 url: 'https://ats.rct.airwork.net/interaction'
-
-# ここにログイン情報を設定
-login_info:
-  username: "your_account"
-  password: "your_password"
+username: 'your_account'
+password: 'your_password'
 ```
 
-> ✅ 実ユーザー情報を書き込んだ `secrets.yaml` は共有前にテンプレ状態へ戻すか、Gitでコミットしないよう注意してください。
+> ✅ 実ユーザー情報を書き込んだ `config.yaml` は、絶対にGitリポジトリへコミットしないでください。
 
 ## 📊 処理フロー
 
 1. **初期化**
    - パスワード認証
-   - 設定ファイル読み込み
+   - 設定ファイル読み込み（config.yaml または config.enc）
    - ログ初期化
 
 2. **ブラウザ操作**
@@ -247,37 +233,32 @@ program/logs/automation_YYYYMMDD_HHMMSS.log
 - パスワードは暗号化されて保存されています（Fernet暗号化）
 - 不正な実行を防止します
 
-### secrets.yaml の取り扱い
+### config.yaml の取り扱い
 
-- 実際のURLやログインID/パスワードを書き込むのは `program/secrets.yaml` のみです。
-- リポジトリにコミットする前に必ずテンプレート（`URLを入力` などの状態）へ戻してください。
-- 運用端末では `git update-index --skip-worktree program/secrets.yaml` でローカル専用ファイルにしておくと安全です。
+- `config.yaml` にはログインIDやパスワードが平文で保存されます。
+- **重要**: 第三者にファイルを見られないよう管理してください。
+- Gitリポジトリで管理する場合は、必ずこれらの値を削除したテンプレート状態でコミットしてください。
 
-### config.yaml の暗号化（推奨）
+### config.enc の利用（配布時）
 
-`config.yaml` 自体には機密情報を含めない形になりましたが、配布時は従来通り暗号化済みの `config.enc` を共有する運用を推奨します。暗号化しておくことで環境設定値の改ざんを防げます。
+管理者が他のユーザーに当ツールを配布する場合、`config.yaml` を暗号化した `config.enc` を作成して配布することを推奨します。
 
-#### 管理者向け：暗号化手順
+#### 暗号化手順（管理者向け）
 
-1. `config暗号化ツール.bat` を実行
-2. メニューから「1」を選択
-3. パスワードを設定（8文字以上）
-4. 生成された `program/config.enc` をメンバーに共有
-5. パスワードは別途、安全な方法で伝達
+1. `config.yaml` に正しいID/PASSを入力
+2. `config暗号化ツール.bat` を実行し、暗号化パスワードを設定
+3. 生成された `program/config.enc` を配布用フォルダへ移動
+4. `config.yaml` はID/PASSを消去して元に戻す
 
-詳細は [`CONFIG暗号化の手順.md`](CONFIG暗号化の手順.md) を参照してください。
+#### 利用手順（利用者向け）
 
-#### メンバー向け：暗号化ファイルの使用
-
-1. `program/config.enc` を受け取る
-2. 通常通りプログラムを実行
-3. 設定ファイルの復号パスワードを入力
-4. 自動的に復号されて処理が開始
+1. `program/config.enc` がある状態でプログラムを実行
+2. 設定ファイルの復号パスワードを入力
+3. 自動的に復号されて処理が開始
 
 **利点**:
-- ✅ `config.yaml` の改ざんを防げる
-- ✅ パスワードを知らない限り復号できない
-- ✅ チーム共有時のセキュリティ向上（`secrets.yaml` と併用）
+- ✅ ユーザーに見せずにID/PASSを埋め込める
+- ✅ 設定ファイルの改ざんを防げる
 
 ### 注意事項
 - `config.yaml` または `config.enc` を適切に管理してください
